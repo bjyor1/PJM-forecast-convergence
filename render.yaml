@@ -37,4 +37,5 @@ services:
 
 databases:
   - name: pjm-forecast-db
-    plan: starter
+    plan: basic-256mb
+
