@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: pjm-forecast-web
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pjm-forecast-db
+          property: connectionString
+      - key: AREA
+        value: PJM RTO
+      - key: RETENTION_DAYS
+        value: "7"
+      - key: PJM_7DAY_URL
+        sync: false
+
+  - type: cron
+    name: pjm-forecast-ingest
+    env: python
+    schedule: "*/30 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python ingest.py
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pjm-forecast-db
+          property: connectionString
+      - key: AREA
+        value: PJM RTO
+      - key: RETENTION_DAYS
+        value: "7"
+      - key: PJM_7DAY_URL
+        sync: false
+
+databases:
+  - name: pjm-forecast-db
+    plan: starter
