@@ -1,29 +1,59 @@
+# ingest.py
+#
+# Ingest PJM load forecast datasets into Postgres.
+# - "7day" (hourly load forecast; you already have this working)
+# - "vshort" (very short / 5-min load forecast feed)
+#
+# Uses Playwright Chromium to capture the Ocp-Apim-Subscription-Key from dataminer2.pjm.com,
+# then calls api.pjm.com CSV endpoints with that key.
+#
+# Required env:
+#   DATABASE_URL
+#   PJM_7DAY_URL
+#   PJM_VSHORT_URL
+#
+# Optional env:
+#   DATAMINER_URL=https://dataminer2.pjm.com/
+#   AREA_FILTER=RTO_COMBINED
+#   RETENTION_DAYS=7
+#   HORIZON_HOURS_7DAY=48   (or higher if you ingest/store more)
+#   HORIZON_HOURS_VSHORT=2  (very short is typically ~2 hours)
+#   MIN_POINTS_7DAY=10
+#   MIN_POINTS_VSHORT=10
+
 import os, json, hashlib
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 
 import pandas as pd
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 from db import get_conn, init_db
 
 DATAMINER_URL = os.environ.get("DATAMINER_URL", "https://dataminer2.pjm.com/")
-
 AREA_FILTER = os.environ.get("AREA_FILTER", "RTO_COMBINED")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
 
 PJM_7DAY_URL = os.environ["PJM_7DAY_URL"]
 PJM_VSHORT_URL = os.environ["PJM_VSHORT_URL"]
 
-# how far out to keep per feed
-HORIZON_HOURS_7DAY = int(os.environ.get("HORIZON_HOURS_7DAY", "96"))     # extend if you want
-HORIZON_HOURS_VSHORT = int(os.environ.get("HORIZON_HOURS_VSHORT", "2"))  # 5-min feed is ~2h window
+HORIZON_HOURS_7DAY = int(os.environ.get("HORIZON_HOURS_7DAY", "48"))
+HORIZON_HOURS_VSHORT = int(os.environ.get("HORIZON_HOURS_VSHORT", "2"))
+
+MIN_POINTS_7DAY = int(os.environ.get("MIN_POINTS_7DAY", "10"))
+MIN_POINTS_VSHORT = int(os.environ.get("MIN_POINTS_VSHORT", "10"))
+
 
 def sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
+
 def get_subscription_key_via_browser() -> str:
+    """
+    Launch headless Chromium, load Data Miner, and capture the Ocp-Apim-Subscription-Key
+    from the site's own API calls.
+    """
     sub_key = {"value": None}
 
     with sync_playwright() as p:
@@ -41,7 +71,12 @@ def get_subscription_key_via_browser() -> str:
 
         page = context.new_page()
         page.goto(DATAMINER_URL, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(3000)
+
+        # Give the app time to issue API calls
+        try:
+            page.wait_for_timeout(3000)
+        except PWTimeout:
+            pass
 
         deadline = datetime.now(timezone.utc) + timedelta(seconds=20)
         while not sub_key["value"] and datetime.now(timezone.utc) < deadline:
@@ -51,8 +86,9 @@ def get_subscription_key_via_browser() -> str:
         browser.close()
 
     if not sub_key["value"]:
-        raise RuntimeError("Could not capture Ocp-Apim-Subscription-Key from Data Miner.")
+        raise RuntimeError("Could not capture Ocp-Apim-Subscription-Key from Data Miner. Site may have changed.")
     return sub_key["value"]
+
 
 def fetch_csv(url: str, sub_key: str) -> bytes:
     headers = {
@@ -65,61 +101,89 @@ def fetch_csv(url: str, sub_key: str) -> bytes:
     r.raise_for_status()
     return r.content
 
-def pick_cols(df: pd.DataFrame):
-    # Be robust to column naming differences across feeds.
-    cols = {c.lower(): c for c in df.columns}
 
-    def find_one(candidates):
-        for cand in candidates:
-            if cand in cols:
-                return cols[cand]
+def parse_csv(csv_bytes: bytes) -> pd.DataFrame:
+    return pd.read_csv(StringIO(csv_bytes.decode("utf-8", errors="replace")))
+
+
+def infer_columns(df: pd.DataFrame):
+    """
+    Infer columns in a robust way. Different PJM feeds sometimes use slightly different names.
+    We try common variants and fall back to errors with a clear message.
+    """
+    lower = {c.lower(): c for c in df.columns}
+
+    def find_one(cands):
+        for c in cands:
+            if c in lower:
+                return lower[c]
         return None
 
-    col_area = find_one(["forecast_area", "area", "zone"])
+    col_area = find_one(["forecast_area", "area", "zone", "region"])
     col_target = find_one([
         "forecast_datetime_beginning_utc",
-        "forecast_datetime_beginning_ept",
-        "forecast_datetime_beginning",
+        "forecast_datetime_ending_utc",
         "forecast_datetime_utc",
+        "forecast_datetime_beginning_ept",
         "forecast_datetime_ept",
         "datetime_utc",
         "datetime_ept",
+        "target_ts",
+        "forecast_datetime",
     ])
     col_mw = find_one([
         "forecast_load_mw",
         "load_forecast_mw",
         "forecast_mw",
         "mw",
+        "load_mw",
     ])
 
-    if not col_area or not col_target or not col_mw:
-        raise RuntimeError(f"Could not identify required columns. Got columns: {list(df.columns)}")
+    missing = []
+    if not col_area: missing.append("forecast_area (or similar)")
+    if not col_target: missing.append("forecast_datetime_* (or similar)")
+    if not col_mw: missing.append("forecast_load_mw (or similar)")
+    if missing:
+        raise RuntimeError(f"Could not infer required columns: {missing}. CSV columns: {list(df.columns)}")
 
     return col_area, col_target, col_mw
 
-def ingest_feed(feed: str, url: str, horizon_hours: int, sub_key: str):
+
+def normalize_points(df: pd.DataFrame, col_area: str, col_target: str, col_mw: str) -> pd.DataFrame:
+    df = df[df[col_area] == AREA_FILTER].copy()
+    df["target_ts"] = pd.to_datetime(df[col_target], utc=True, errors="coerce")
+    df = df.dropna(subset=["target_ts"])
+    df["mw_val"] = pd.to_numeric(df[col_mw], errors="coerce")
+    df = df.dropna(subset=["mw_val"])
+    df = df.sort_values("target_ts")
+    return df
+
+
+def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_key: str):
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(hours=horizon_hours)
 
     csv_bytes = fetch_csv(url, sub_key)
     payload_hash = sha256_bytes(csv_bytes)
 
-    df = pd.read_csv(StringIO(csv_bytes.decode("utf-8", errors="replace")))
+    df = parse_csv(csv_bytes)
+    col_area, col_target, col_mw = infer_columns(df)
+    df = normalize_points(df, col_area, col_target, col_mw)
 
-    col_area, col_target, col_mw = pick_cols(df)
+    # Trim to horizon end (do NOT trim front; your UI can)
+    df = df[df["target_ts"] < window_end]
 
-    df = df[df[col_area] == AREA_FILTER].copy()
-    df["target_ts"] = pd.to_datetime(df[col_target], utc=True, errors="coerce")
-    df = df.dropna(subset=["target_ts"])
-    df = df[(df["target_ts"] <= window_end)]
+    if len(df) < min_points:
+        raise RuntimeError(
+            f"{feed}: too few points after filtering ({len(df)}). "
+            f"Check AREA_FILTER={AREA_FILTER}, horizon_hours={horizon_hours}, or URL params."
+        )
 
-    if df.empty:
-        raise RuntimeError(f"{feed}: After filtering, 0 points remained.")
-
-    points = [(t.to_pydatetime(), float(mw)) for t, mw in zip(df["target_ts"], df[col_mw])]
+    points = [(t.to_pydatetime(), float(mw)) for t, mw in zip(df["target_ts"], df["mw_val"])]
 
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Dedupe by payload hash (per feed+area)
             cur.execute(
                 "SELECT 1 FROM forecast_runs WHERE feed=%s AND area=%s AND payload_hash=%s",
                 (feed, AREA_FILTER, payload_hash),
@@ -143,16 +207,25 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, sub_key: str):
 
         conn.commit()
 
-    return {"feed": feed, "status": "ok", "run_ts": now.isoformat(), "points": len(points)}
+    return {
+        "feed": feed,
+        "status": "ok",
+        "run_ts": now.isoformat(),
+        "points": len(points),
+        "first_target_ts": points[0][0].isoformat(),
+        "last_target_ts": points[-1][0].isoformat(),
+    }
+
 
 def ingest_once():
     init_db()
     sub_key = get_subscription_key_via_browser()
 
     results = []
-    results.append(ingest_feed("7day", PJM_7DAY_URL, HORIZON_HOURS_7DAY, sub_key))
-    results.append(ingest_feed("vshort", PJM_VSHORT_URL, HORIZON_HOURS_VSHORT, sub_key))
+    results.append(ingest_feed("7day", PJM_7DAY_URL, HORIZON_HOURS_7DAY, MIN_POINTS_7DAY, sub_key))
+    results.append(ingest_feed("vshort", PJM_VSHORT_URL, HORIZON_HOURS_VSHORT, MIN_POINTS_VSHORT, sub_key))
     return {"status": "ok", "results": results}
+
 
 if __name__ == "__main__":
     print(json.dumps(ingest_once(), indent=2))
