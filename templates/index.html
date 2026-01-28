@@ -12,26 +12,109 @@
         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         margin: 16px;
       }
+
       #chart {
         width: 100%;
-        height: 75vh;
+        height: 70vh;
       }
+
       .row {
         display: flex;
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
       }
+
       .badge {
         padding: 6px 10px;
         border: 1px solid #ddd;
         border-radius: 999px;
         font-size: 14px;
       }
+
       .hint {
         color: #666;
         font-size: 13px;
         margin-top: 6px;
+      }
+
+      .section-title {
+        margin: 18px 0 8px;
+        font-size: 16px;
+        font-weight: 650;
+      }
+
+      /* Table layout */
+      .table-wrap {
+        border: 1px solid #e5e5e5;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .table-scroll {
+        overflow: auto;
+        max-height: 55vh;
+        background: #fff;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: max-content; /* allow horizontal scroll */
+        min-width: 100%;
+      }
+
+      th, td {
+        border: 1px solid #eee;
+        padding: 6px 8px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        background: #fafafa;
+        z-index: 2;
+        font-weight: 650;
+      }
+
+      th.sticky-left, td.sticky-left {
+        position: sticky;
+        left: 0;
+        z-index: 3;
+        background: #fafafa;
+        font-weight: 650;
+      }
+
+      td.sticky-left {
+        background: #fff;
+        font-weight: 600;
+      }
+
+      .cell {
+        text-align: right;
+        min-width: 78px;
+      }
+
+      .mono {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .legend {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        color: #666;
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+
+      .swatch {
+        width: 16px;
+        height: 10px;
+        border-radius: 2px;
+        border: 1px solid rgba(0,0,0,0.08);
       }
     </style>
   </head>
@@ -42,18 +125,39 @@
       <div class="badge" id="status">Loading…</div>
     </div>
     <div class="hint">
-      Latest forecast is red. Older runs fade aggressively. Times shown in ET.
+      Chart: latest run stands out. Table: red = forecast up vs previous run, green = down. Times shown in ET.
     </div>
 
     <div id="chart"></div>
 
+    <div class="section-title">Forecast Matrix (Load hour × Forecast release)</div>
+    <div class="legend">
+      <div class="row" style="gap:8px;">
+        <div class="swatch" style="background: rgba(220, 53, 69, 0.65);"></div>
+        <div>Forecast went up</div>
+      </div>
+      <div class="row" style="gap:8px;">
+        <div class="swatch" style="background: rgba(40, 167, 69, 0.65);"></div>
+        <div>Forecast went down</div>
+      </div>
+      <div class="row" style="gap:8px;">
+        <div class="swatch" style="background: rgba(0, 0, 0, 0.06);"></div>
+        <div>No change / no prior</div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-scroll" id="table-container"></div>
+    </div>
+
     <script>
       const AREA = "RTO_COMBINED";
-      const SINCE_HOURS = 12;
+      const SINCE_HOURS = 12;      // how many past runs to show
       const TIMEZONE = "America/New_York";
 
-      const COLOR_LATEST = "#d62728"; // red
-      const COLOR_OLD = "#1f77b4";    // blue
+      // Chart styling (latest red, history blue)
+      const COLOR_LATEST = "#d62728";
+      const COLOR_OLD = "#1f77b4";
 
       function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v));
@@ -68,6 +172,128 @@
         return new Date(new Date().toLocaleString("en-US", { timeZone: TIMEZONE }));
       }
 
+      function fmtET(dt) {
+        // Ex: 2026-01-28 07:00 ET
+        const y = dt.getFullYear();
+        const mo = String(dt.getMonth() + 1).padStart(2, "0");
+        const da = String(dt.getDate()).padStart(2, "0");
+        const hh = String(dt.getHours()).padStart(2, "0");
+        const mm = String(dt.getMinutes()).padStart(2, "0");
+        return `${y}-${mo}-${da} ${hh}:${mm}`;
+      }
+
+      function fmtETShort(dt) {
+        // Ex: 01-28 07:00
+        const mo = String(dt.getMonth() + 1).padStart(2, "0");
+        const da = String(dt.getDate()).padStart(2, "0");
+        const hh = String(dt.getHours()).padStart(2, "0");
+        const mm = String(dt.getMinutes()).padStart(2, "0");
+        return `${mo}-${da} ${hh}:${mm}`;
+      }
+
+      function fmtMW(v) {
+        return (Math.round(v)).toLocaleString("en-US");
+      }
+
+      function percentile(arr, p) {
+        if (!arr.length) return 0;
+        const a = [...arr].sort((x, y) => x - y);
+        const idx = (a.length - 1) * p;
+        const lo = Math.floor(idx);
+        const hi = Math.ceil(idx);
+        if (lo === hi) return a[lo];
+        return a[lo] + (a[hi] - a[lo]) * (idx - lo);
+      }
+
+      function colorForDelta(delta, scale) {
+        // scale is like a "typical big change" (p95 abs delta)
+        if (delta === null || delta === undefined || !isFinite(delta) || scale <= 0) {
+          return "rgba(0,0,0,0.03)";
+        }
+        if (Math.abs(delta) < 0.5) {
+          return "rgba(0,0,0,0.03)";
+        }
+        const t = clamp(Math.abs(delta) / scale, 0, 1);
+        // Make intensity very obvious but still readable
+        const alpha = 0.10 + 0.70 * Math.pow(t, 0.8); // 0.10 .. 0.80
+        if (delta > 0) return `rgba(220, 53, 69, ${alpha})`;   // red
+        return `rgba(40, 167, 69, ${alpha})`;                  // green
+      }
+
+      function buildMatrixTable(runs) {
+        // Sort runs oldest -> newest (so delta is current - previous)
+        const runsSorted = [...runs].sort((a, b) => new Date(a.run_ts) - new Date(b.run_ts));
+
+        // Build a stable set of columns (load datetimes)
+        const colSet = new Set();
+        runsSorted.forEach(r => r.points.forEach(p => colSet.add(p.target_ts)));
+        const colsUtc = [...colSet].sort((a, b) => new Date(a) - new Date(b)); // ISO strings
+        const colsEt = colsUtc.map(ts => toETDate(ts));
+        const colLabels = colsEt.map(d => fmtETShort(d));
+
+        // Map: runIndex -> { target_ts -> mw }
+        const mwMaps = runsSorted.map(r => {
+          const m = new Map();
+          r.points.forEach(p => m.set(p.target_ts, p.mw));
+          return m;
+        });
+
+        // Compute deltas for shading and collect abs deltas to set a robust scale
+        const absDeltas = [];
+        const deltas = runsSorted.map((r, i) => {
+          const dmap = new Map();
+          colsUtc.forEach(ts => {
+            const cur = mwMaps[i].get(ts);
+            const prev = i > 0 ? mwMaps[i - 1].get(ts) : undefined;
+            if (cur === undefined || prev === undefined) {
+              dmap.set(ts, null);
+            } else {
+              const delta = cur - prev;
+              dmap.set(ts, delta);
+              absDeltas.push(Math.abs(delta));
+            }
+          });
+          return dmap;
+        });
+
+        const scale = Math.max(50, percentile(absDeltas, 0.95)); // floor so it doesn't go nuclear on quiet days
+
+        // Build HTML table
+        let html = `<table><thead><tr>`;
+        html += `<th class="sticky-left">Forecast release (ET)</th>`;
+        for (let j = 0; j < colLabels.length; j++) {
+          html += `<th class="mono">${colLabels[j]}</th>`;
+        }
+        html += `</tr></thead><tbody>`;
+
+        // Display newest rows at top (more useful)
+        for (let i = runsSorted.length - 1; i >= 0; i--) {
+          const runEt = toETDate(runsSorted[i].run_ts);
+          html += `<tr>`;
+          html += `<td class="sticky-left mono">${fmtET(runEt)}</td>`;
+
+          for (let j = 0; j < colsUtc.length; j++) {
+            const ts = colsUtc[j];
+            const mw = mwMaps[i].get(ts);
+            const delta = deltas[i].get(ts);
+            const bg = colorForDelta(delta, scale);
+
+            const title = (mw === undefined)
+              ? "No value"
+              : (delta === null ? `MW: ${fmtMW(mw)} (no prior)` : `MW: ${fmtMW(mw)} | Δ vs prior: ${delta.toFixed(0)} MW`);
+
+            html += `<td class="cell mono" style="background:${bg}" title="${title}">`;
+            html += (mw === undefined ? "" : fmtMW(mw));
+            html += `</td>`;
+          }
+
+          html += `</tr>`;
+        }
+
+        html += `</tbody></table>`;
+        document.getElementById("table-container").innerHTML = html;
+      }
+
       async function load() {
         // ---- latest run badge ----
         const latestResp = await fetch(`/api/latest?area=${encodeURIComponent(AREA)}`);
@@ -75,7 +301,7 @@
         document.getElementById("status").textContent =
           latest && latest.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
 
-        // ---- runs ----
+        // ---- forecast runs ----
         const runsResp = await fetch(
           `/api/runs?area=${encodeURIComponent(AREA)}&since_hours=${encodeURIComponent(SINCE_HOURS)}`
         );
@@ -83,22 +309,20 @@
         const runs = (data && data.runs) ? data.runs : [];
         if (!runs.length) return;
 
+        // ===== Chart =====
         const now = new Date();
         const maxAgeMin = SINCE_HOURS * 60;
         const newestMs = Math.max(...runs.map(r => new Date(r.run_ts).getTime()));
-
         const traces = [];
 
         runs.forEach((r) => {
           const runTs = new Date(r.run_ts);
           const ageMin = (now - runTs) / 60000;
-
-          // 0 newest → 1 oldest
           const t = clamp(ageMin / maxAgeMin, 0, 1);
 
-          // SUPER aggressive nonlinear fade
-          // Recent = visible, old = basically gone
-          const curve = Math.pow(1 - t, 4.0);
+          // Aggressive but not invisible (you tuned this already)
+          const curve = Math.pow(1 - t, 2.2);
+          const opacity = 0.12 + 0.78 * curve;
 
           const isLatest = runTs.getTime() === newestMs;
 
@@ -109,9 +333,9 @@
             mode: "lines",
             line: {
               color: isLatest ? COLOR_LATEST : COLOR_OLD,
-              width: isLatest ? 2.4 : 0.8
+              width: isLatest ? 2.6 : 1.1
             },
-            opacity: isLatest ? 1.0 : (0.005 + 0.25 * curve),
+            opacity: isLatest ? 1.0 : opacity,
             hovertemplate: isLatest
               ? "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra>Latest</extra>"
               : "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
@@ -131,7 +355,7 @@
           responsive: true
         });
 
-        // ---- NOW (ET) ----
+        // Now (ET) vertical line
         const nowET = nowETDate();
         Plotly.relayout("chart", {
           shapes: [
@@ -147,6 +371,9 @@
             }
           ]
         });
+
+        // ===== Table =====
+        buildMatrixTable(runs);
       }
 
       load();
