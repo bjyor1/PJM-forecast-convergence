@@ -124,20 +124,20 @@
       <div class="badge" id="status">Loading…</div>
     </div>
     <div class="hint">
-      Chart: latest run stands out. Table: colors are relative per load-hour row (green = lower, red = higher). Times in ET.
+      Chart: latest run is red. Table: colors are relative within each load-hour column (green = lower, red = higher). Times shown in ET.
     </div>
 
     <div id="chart"></div>
 
-    <div class="section-title">Forecast Matrix (Load datetime × Forecast release)</div>
+    <div class="section-title">Forecast Matrix (Forecast release × Load datetime)</div>
     <div class="legend">
       <div class="row" style="gap:8px;">
         <div class="swatch" style="background: rgba(40, 167, 69, 0.65);"></div>
-        <div>Lower (within row)</div>
+        <div>Lower (within column)</div>
       </div>
       <div class="row" style="gap:8px;">
         <div class="swatch" style="background: rgba(220, 53, 69, 0.65);"></div>
-        <div>Higher (within row)</div>
+        <div>Higher (within column)</div>
       </div>
       <div class="row" style="gap:8px;">
         <div class="swatch" style="background: rgba(0, 0, 0, 0.04);"></div>
@@ -151,12 +151,14 @@
 
     <script>
       const AREA = "RTO_COMBINED";
-      const SINCE_HOURS = 12;
       const TIMEZONE = "America/New_York";
 
-      // Chart styling (latest red, history blue)
-      const COLOR_LATEST = "#d62728";
-      const COLOR_OLD = "#1f77b4";
+      // Keep only the latest N forecast updates (runs) for BOTH chart and table.
+      const MAX_RUNS = 12;
+
+      // Chart styling
+      const COLOR_LATEST = "#d62728"; // red
+      const COLOR_OLD = "#1f77b4";    // blue
 
       function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v));
@@ -192,56 +194,52 @@
         return (Math.round(v)).toLocaleString("en-US");
       }
 
-      // Row-relative shading: compare forecasts for the SAME load datetime across release times
-      // Compute t = (value - min)/(max - min) within the row.
-      // t near 0 => green, t near 1 => red, middle => neutral.
-      function colorForRowRelative(t) {
+      // Column-relative shading helper:
+      // given t in [0,1] where 0=min (green) and 1=max (red), shade by distance from mid.
+      function colorForColumnRelative(t) {
         if (t === null || t === undefined || !isFinite(t)) return "rgba(0,0,0,0.03)";
 
-        // Push intensity so it's obvious but still readable
-        const distFromMid = Math.abs(t - 0.5) * 2; // 0..1
-        const alpha = 0.08 + 0.70 * Math.pow(distFromMid, 0.75); // 0.08..0.78
+        const dist = Math.abs(t - 0.5) * 2; // 0..1
+        const alpha = 0.08 + 0.70 * Math.pow(dist, 0.75); // 0.08..0.78
 
-        if (t > 0.5) {
-          return `rgba(220, 53, 69, ${alpha})`; // red for higher
-        } else if (t < 0.5) {
-          return `rgba(40, 167, 69, ${alpha})`; // green for lower
-        }
+        if (t > 0.5) return `rgba(220, 53, 69, ${alpha})`; // red
+        if (t < 0.5) return `rgba(40, 167, 69, ${alpha})`; // green
         return "rgba(0,0,0,0.03)";
       }
 
-      function buildMatrixTable(runs) {
-        // We want:
-        // Rows = load datetime (target_ts in ET)
-        // Cols = forecast release timestamp (run_ts in ET)
+      function pickLatestRuns(runs, maxRuns) {
+        // Ensure newest are kept, but preserve chronological order for rendering if needed.
+        const sorted = [...runs].sort((a, b) => new Date(a.run_ts) - new Date(b.run_ts)); // oldest->newest
+        const sliced = sorted.slice(Math.max(0, sorted.length - maxRuns));
+        return sliced; // still oldest->newest
+      }
 
-        // Sort releases oldest -> newest so columns flow in time
-        const releasesSorted = [...runs].sort((a, b) => new Date(a.run_ts) - new Date(b.run_ts));
+      function buildMatrixTable(runsLimited) {
+        // Rows = forecast release timestamp (ET)
+        // Cols = load datetime (ET)
+        // Shading = relative within each column (same load hour)
 
-        const colRunTsUtc = releasesSorted.map(r => r.run_ts);
-        const colRunTsEt = colRunTsUtc.map(ts => toETDate(ts));
-        const colLabels = colRunTsEt.map(d => fmtETShort(d));
+        const runsSorted = [...runsLimited].sort((a, b) => new Date(a.run_ts) - new Date(b.run_ts)); // oldest->newest
 
-        // Collect all load datetimes across all runs (stable row set)
-        const rowSet = new Set();
-        releasesSorted.forEach(r => r.points.forEach(p => rowSet.add(p.target_ts)));
-        const rowTargetUtc = [...rowSet].sort((a, b) => new Date(a) - new Date(b));
-        const rowTargetEt = rowTargetUtc.map(ts => toETDate(ts));
-        const rowLabels = rowTargetEt.map(d => fmtET(d));
+        // Columns (load datetimes)
+        const colSet = new Set();
+        runsSorted.forEach(r => r.points.forEach(p => colSet.add(p.target_ts)));
+        const colUtc = [...colSet].sort((a, b) => new Date(a) - new Date(b));
+        const colEt = colUtc.map(ts => toETDate(ts));
+        const colLabels = colEt.map(d => fmtETShort(d));
 
-        // Build a quick lookup: for each run (col), map target_ts -> mw
-        const mwMaps = releasesSorted.map(r => {
+        // Lookup: runIndex -> Map(target_ts -> mw)
+        const mwMaps = runsSorted.map(r => {
           const m = new Map();
           r.points.forEach(p => m.set(p.target_ts, p.mw));
           return m;
         });
 
-        // For each row (target_ts), compute min/max across columns (releases)
-        // Only using non-missing values.
-        const rowMinMax = rowTargetUtc.map(ts => {
+        // For each column, min/max across runs
+        const colMinMax = colUtc.map(ts => {
           const vals = [];
-          for (let j = 0; j < mwMaps.length; j++) {
-            const v = mwMaps[j].get(ts);
+          for (let i = 0; i < mwMaps.length; i++) {
+            const v = mwMaps[i].get(ts);
             if (v !== undefined && v !== null && isFinite(v)) vals.push(v);
           }
           if (!vals.length) return { min: null, max: null };
@@ -253,48 +251,40 @@
           return { min: mn, max: mx };
         });
 
-        // HTML table
         let html = `<table><thead><tr>`;
-        html += `<th class="sticky-left">Load datetime (ET)</th>`;
+        html += `<th class="sticky-left">Forecast release (ET)</th>`;
         for (let j = 0; j < colLabels.length; j++) {
-          html += `<th class="mono" title="${fmtET(colRunTsEt[j])}">${colLabels[j]}</th>`;
+          html += `<th class="mono">${colLabels[j]}</th>`;
         }
         html += `</tr></thead><tbody>`;
 
-        // Show rows newest at top (usually more useful); flip by iterating backwards
-        for (let i = rowTargetUtc.length - 1; i >= 0; i--) {
-          const ts = rowTargetUtc[i];
-          const label = rowLabels[i];
-          const mm = rowMinMax[i];
-
+        // Newest release at top
+        for (let i = runsSorted.length - 1; i >= 0; i--) {
+          const runEt = toETDate(runsSorted[i].run_ts);
           html += `<tr>`;
-          html += `<td class="sticky-left mono">${label}</td>`;
+          html += `<td class="sticky-left mono">${fmtET(runEt)}</td>`;
 
-          const denom = (mm.min !== null && mm.max !== null) ? (mm.max - mm.min) : 0;
-
-          for (let j = 0; j < mwMaps.length; j++) {
-            const mw = mwMaps[j].get(ts);
+          for (let j = 0; j < colUtc.length; j++) {
+            const mw = mwMaps[i].get(colUtc[j]);
+            const mm = colMinMax[j];
 
             let t = null;
-            if (mw !== undefined && mw !== null && isFinite(mw) && denom > 0) {
-              t = (mw - mm.min) / denom; // 0..1
-            } else if (mw !== undefined && mw !== null && isFinite(mw) && denom === 0) {
-              // all same in row => neutral
-              t = 0.5;
+            if (mw !== undefined && mw !== null && isFinite(mw) && mm.min !== null && mm.max !== null) {
+              if (mm.max !== mm.min) {
+                t = (mw - mm.min) / (mm.max - mm.min);
+              } else {
+                t = 0.5; // all same in this column
+              }
             }
 
-            const bg = colorForRowRelative(t);
+            const bg = colorForColumnRelative(t);
 
-            let title = "No value";
-            if (mw !== undefined && mw !== null && isFinite(mw)) {
-              const rankInfo = (mm.min === null || mm.max === null)
-                ? ""
-                : ` | row min: ${fmtMW(mm.min)} max: ${fmtMW(mm.max)}`;
-              title = `Load: ${label} | Release: ${fmtET(colRunTsEt[j])} | MW: ${fmtMW(mw)}${rankInfo}`;
-            }
+            const title = (mw !== undefined && mw !== null && isFinite(mw))
+              ? `MW: ${fmtMW(mw)} | col min: ${fmtMW(mm.min)} max: ${fmtMW(mm.max)}`
+              : "No value";
 
             html += `<td class="cell mono" style="background:${bg}" title="${title}">`;
-            html += (mw === undefined || mw === null || !isFinite(mw)) ? "" : fmtMW(mw);
+            html += (mw !== undefined && mw !== null && isFinite(mw)) ? fmtMW(mw) : "";
             html += `</td>`;
           }
 
@@ -306,36 +296,39 @@
       }
 
       async function load() {
-        // ---- latest run badge ----
+        // Badge
         const latestResp = await fetch(`/api/latest?area=${encodeURIComponent(AREA)}`);
         const latest = await latestResp.json();
         document.getElementById("status").textContent =
           latest && latest.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
 
-        // ---- forecast runs ----
-        const runsResp = await fetch(
-          `/api/runs?area=${encodeURIComponent(AREA)}&since_hours=${encodeURIComponent(SINCE_HOURS)}`
-        );
+        // Fetch more than we need, then clip to latest MAX_RUNS
+        const runsResp = await fetch(`/api/runs?area=${encodeURIComponent(AREA)}&since_hours=48`);
         const data = await runsResp.json();
-        const runs = (data && data.runs) ? data.runs : [];
-        if (!runs.length) return;
+        const runsAll = (data && data.runs) ? data.runs : [];
+        if (!runsAll.length) return;
+
+        const runsLimited = pickLatestRuns(runsAll, MAX_RUNS);
 
         // ===== Chart =====
         const now = new Date();
-        const maxAgeMin = SINCE_HOURS * 60;
-        const newestMs = Math.max(...runs.map(r => new Date(r.run_ts).getTime()));
+        const newestMs = Math.max(...runsLimited.map(r => new Date(r.run_ts).getTime()));
+
+        // Fade based on rank among the kept runs (not wall-clock time)
+        // newest rank = 0, oldest rank = 1
         const traces = [];
+        const n = runsLimited.length;
 
-        runs.forEach((r) => {
+        runsLimited.forEach((r, idx) => {
           const runTs = new Date(r.run_ts);
-          const ageMin = (now - runTs) / 60000;
-          const t = clamp(ageMin / maxAgeMin, 0, 1);
-
-          // Your tuned fade (visible but clearly ranked)
-          const curve = Math.pow(1 - t, 2.2);
-          const opacity = 0.12 + 0.78 * curve;
-
           const isLatest = runTs.getTime() === newestMs;
+
+          const tRank = (n <= 1) ? 0 : (idx / (n - 1)); // 0 oldest -> 1 newest (because runsLimited oldest->newest)
+          const ageT = 1 - tRank; // 0 newest -> 1 oldest
+
+          // Visible gradient you liked
+          const curve = Math.pow(1 - ageT, 2.2);
+          const opacity = 0.12 + 0.78 * curve;
 
           traces.push({
             x: r.points.map(p => toETDate(p.target_ts)),
@@ -366,7 +359,7 @@
           responsive: true
         });
 
-        // Now (ET) vertical line
+        // Now (ET) line
         const nowET = nowETDate();
         Plotly.relayout("chart", {
           shapes: [
@@ -383,8 +376,8 @@
           ]
         });
 
-        // ===== Table (swapped axes + row-relative shading) =====
-        buildMatrixTable(runs);
+        // ===== Table =====
+        buildMatrixTable(runsLimited);
       }
 
       load();
