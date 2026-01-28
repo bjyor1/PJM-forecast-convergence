@@ -28,6 +28,11 @@
         border-radius: 999px;
         font-size: 14px;
       }
+      .hint {
+        color: #666;
+        font-size: 13px;
+        margin-top: 6px;
+      }
     </style>
   </head>
 
@@ -35,6 +40,9 @@
     <div class="row">
       <h2 style="margin: 0;">PJM Load Forecast Convergence</h2>
       <div class="badge" id="status">Loading…</div>
+    </div>
+    <div class="hint">
+      Latest run is boldest; older runs fade & thin. Times shown in ET.
     </div>
 
     <div id="chart"></div>
@@ -44,11 +52,15 @@
       const SINCE_HOURS = 12; // how many past runs to show
       const TIMEZONE = "America/New_York";
 
+      // One hue, strong visual hierarchy:
+      // - newest: fully opaque, thick
+      // - old: faint, thin
+      const LINE_COLOR = "#1f77b4"; // readable blue
+
       function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v));
       }
 
-      // Convert an ISO UTC timestamp (e.g. "2026-01-28T12:00:00Z") to a Date that Plotly will display as ET.
       function toETDate(utcIso) {
         const d = new Date(utcIso);
         return new Date(d.toLocaleString("en-US", { timeZone: TIMEZONE }));
@@ -77,35 +89,48 @@
             xaxis: { title: "Hour (ET)" },
             yaxis: { title: "MW" },
             annotations: [
-              {
-                text: "No data yet",
-                xref: "paper",
-                yref: "paper",
-                x: 0.5,
-                y: 0.5,
-                showarrow: false
-              }
+              { text: "No data yet", xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false }
             ]
           }, { displayModeBar: false, responsive: true });
           return;
         }
 
         const now = new Date();
+        const maxAgeMin = SINCE_HOURS * 60;
+
+        // newest run timestamp (ms)
+        const newestMs = Math.max(...runs.map(rr => new Date(rr.run_ts).getTime()));
+
         const traces = [];
 
-        // Build one line per run, fading older runs
         runs.forEach((r) => {
           const runTs = new Date(r.run_ts);
-          const ageMinutes = (now - runTs) / 60000;
-          const opacity = clamp(1 - ageMinutes / (SINCE_HOURS * 60), 0.05, 1);
+          const ageMin = (now - runTs) / 60000;
+
+          // 0 = newest, 1 = oldest (within SINCE_HOURS window)
+          const t = clamp(ageMin / maxAgeMin, 0, 1);
+
+          // Opacity: newest 1.00 -> oldest 0.08 (still visible)
+          const opacity = 1.0 - t * 0.92; // 1.00 .. 0.08
+
+          // Width: newest 3.2 -> oldest 1.0
+          const width = 1.0 + (1 - t) * 2.2; // 3.2 .. 1.0
+
+          const isLatest = runTs.getTime() === newestMs;
 
           traces.push({
-            x: r.points.map((p) => toETDate(p.target_ts)),
-            y: r.points.map((p) => p.mw),
+            x: r.points.map(p => toETDate(p.target_ts)),
+            y: r.points.map(p => p.mw),
             type: "scatter",
             mode: "lines",
+            line: {
+              color: LINE_COLOR,
+              width: width
+            },
             opacity: opacity,
-            hovertemplate: "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
+            hovertemplate: isLatest
+              ? "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra>Latest</extra>"
+              : "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
           });
         });
 
@@ -117,7 +142,6 @@
           shapes: []
         };
 
-        // Draw plot
         Plotly.newPlot("chart", traces, layout, {
           displayModeBar: false,
           responsive: true
