@@ -1,0 +1,13 @@
+FROM mcr.microsoft.com/playwright/python:v1.49.1-jammy
+
+WORKDIR /app
+
+# Install Python deps
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app code
+COPY . .
+
+# Run the ingestion script
+CMD ["python", "ingest.py"]
