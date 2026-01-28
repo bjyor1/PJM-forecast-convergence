@@ -10,42 +10,7 @@ services:
         fromDatabase:
           name: pjm-forecast-db
           property: connectionString
-      - key: AREA
-        value: PJM RTO
-      - key: RETENTION_DAYS
-        value: "7"
       - key: PJM_7DAY_URL
         sync: false
-
-  - type: cron
-    name: pjm-forecast-ingest
-    env: python
-    schedule: "*/30 * * * *"
-    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
-    startCommand: python ingest.py
-    envVars:
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "0"
-
-      - key: DATABASE_URL
-        fromDatabase:
-          name: pjm-forecast-db
-          property: connectionString
-
-      - key: PJM_7DAY_URL
-        sync: false
-
       - key: AREA_FILTER
         value: RTO_COMBINED
-
-      - key: RETENTION_DAYS
-        value: "7"
-
-databases:
-  - name: pjm-forecast-db
-    plan: basic-256mb
-
-
-
-
-
