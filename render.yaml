@@ -3,7 +3,7 @@ services:
     name: pjm-forecast-web
     env: python
     plan: starter
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
@@ -21,7 +21,7 @@ services:
     name: pjm-forecast-ingest
     env: python
     schedule: "*/30 * * * *"
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     startCommand: python ingest.py
     envVars:
       - key: DATABASE_URL
@@ -38,4 +38,5 @@ services:
 databases:
   - name: pjm-forecast-db
     plan: basic-256mb
+
 
