@@ -77,8 +77,7 @@ def ingest_once():
     init_db()
 
     now = datetime.now(timezone.utc)
-    window_start = floor_to_hour(now)
-    window_end = window_start + timedelta(hours=48)
+    window_end = now + timedelta(hours=48)
 
     sub_key = get_subscription_key_via_browser()
     csv_bytes = fetch_csv_with_key(sub_key)
@@ -99,7 +98,7 @@ def ingest_once():
     df = df[df["forecast_area"] == AREA_FILTER].copy()
     df["target_ts"] = pd.to_datetime(df["forecast_datetime_beginning_utc"], utc=True, errors="coerce")
     df = df.dropna(subset=["target_ts"])
-    df = df[(df["target_ts"] >= window_start) & (df["target_ts"] < window_end)]
+    df = df[df["target_ts"] < window_end]
 
     if df.empty:
         raise RuntimeError("After filtering, 0 points remained. Check AREA_FILTER or timestamp fields.")
@@ -136,3 +135,4 @@ def ingest_once():
 if __name__ == "__main__":
     res = ingest_once()
     print(json.dumps(res, indent=2))
+
