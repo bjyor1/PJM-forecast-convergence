@@ -33,7 +33,7 @@
 
   <body>
     <div class="row">
-      <h2 style="margin: 0;">PJM Load Forecast Convergence (48h)</h2>
+      <h2 style="margin: 0;">PJM Load Forecast Convergence</h2>
       <div class="badge" id="status">Loading…</div>
     </div>
 
@@ -48,32 +48,101 @@
         return Math.max(lo, Math.min(hi, v));
       }
 
+      // Convert an ISO UTC timestamp (e.g. "2026-01-28T12:00:00Z") to a Date that Plotly will display as ET.
       function toETDate(utcIso) {
         const d = new Date(utcIso);
-        return new Date(
-          d.toLocaleString("en-US", { timeZone: TIMEZONE })
-        );
+        return new Date(d.toLocaleString("en-US", { timeZone: TIMEZONE }));
+      }
+
+      function nowETDate() {
+        return new Date(new Date().toLocaleString("en-US", { timeZone: TIMEZONE }));
       }
 
       async function load() {
         // ---- latest run badge ----
-        const latestResp = await fetch(`/api/latest?area=${AREA}`);
+        const latestResp = await fetch(`/api/latest?area=${encodeURIComponent(AREA)}`);
         const latest = await latestResp.json();
         document.getElementById("status").textContent =
-          latest?.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
+          latest && latest.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
 
         // ---- forecast runs ----
         const runsResp = await fetch(
-          `/api/runs?area=${AREA}&since_hours=${SINCE_HOURS}`
+          `/api/runs?area=${encodeURIComponent(AREA)}&since_hours=${encodeURIComponent(SINCE_HOURS)}`
         );
         const data = await runsResp.json();
-        const runs = data.runs || [];
-        if (!runs.length) return;
+        const runs = (data && data.runs) ? data.runs : [];
+        if (!runs.length) {
+          Plotly.newPlot("chart", [], {
+            margin: { l: 60, r: 20, t: 20, b: 40 },
+            xaxis: { title: "Hour (ET)" },
+            yaxis: { title: "MW" },
+            annotations: [
+              {
+                text: "No data yet",
+                xref: "paper",
+                yref: "paper",
+                x: 0.5,
+                y: 0.5,
+                showarrow: false
+              }
+            ]
+          }, { displayModeBar: false, responsive: true });
+          return;
+        }
 
         const now = new Date();
         const traces = [];
 
+        // Build one line per run, fading older runs
         runs.forEach((r) => {
           const runTs = new Date(r.run_ts);
           const ageMinutes = (now - runTs) / 60000;
-          const opacity = cl
+          const opacity = clamp(1 - ageMinutes / (SINCE_HOURS * 60), 0.05, 1);
+
+          traces.push({
+            x: r.points.map((p) => toETDate(p.target_ts)),
+            y: r.points.map((p) => p.mw),
+            type: "scatter",
+            mode: "lines",
+            opacity: opacity,
+            hovertemplate: "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
+          });
+        });
+
+        const layout = {
+          margin: { l: 60, r: 20, t: 20, b: 40 },
+          xaxis: { title: "Hour (ET)" },
+          yaxis: { title: "MW" },
+          showlegend: false,
+          shapes: []
+        };
+
+        // Draw plot
+        Plotly.newPlot("chart", traces, layout, {
+          displayModeBar: false,
+          responsive: true
+        });
+
+        // ---- NOW (ET) vertical line ----
+        const nowET = nowETDate();
+        Plotly.relayout("chart", {
+          shapes: [
+            {
+              type: "line",
+              xref: "x",
+              yref: "paper",
+              x0: nowET,
+              x1: nowET,
+              y0: 0,
+              y1: 1,
+              line: { color: "red", width: 1, dash: "dot" }
+            }
+          ]
+        });
+      }
+
+      load();
+      setInterval(load, 60_000);
+    </script>
+  </body>
+</html>
