@@ -18,7 +18,7 @@ def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/api/latest")
-def latest(area: str = Query(default="PJM RTO")):
+def latest(area: str = Query(default="RTO_COMBINED")):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -30,7 +30,7 @@ def latest(area: str = Query(default="PJM RTO")):
 
 @app.get("/api/runs")
 def runs(
-    area: str = Query(default="PJM RTO"),
+    area: str = Query(default="RTO_COMBINED"),
     since_hours: int = Query(default=12, ge=1, le=168),
 ):
     since_ts = datetime.now(timezone.utc) - timedelta(hours=since_hours)
@@ -70,3 +70,4 @@ def runs(
         "area": area,
         "runs": [{"run_ts": rt, "points": runs_map.get(rt, [])} for rt in [t.isoformat() for t in run_ts_list]],
     }
+
