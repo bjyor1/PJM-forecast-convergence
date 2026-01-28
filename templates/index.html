@@ -84,4 +84,73 @@
         if (!runs.length) return;
 
         const now = new Date();
-        const maxAgeMin = SIN
+        const maxAgeMin = SINCE_HOURS * 60;
+        const newestMs = Math.max(...runs.map(r => new Date(r.run_ts).getTime()));
+
+        const traces = [];
+
+        runs.forEach((r) => {
+          const runTs = new Date(r.run_ts);
+          const ageMin = (now - runTs) / 60000;
+
+          // 0 newest → 1 oldest
+          const t = clamp(ageMin / maxAgeMin, 0, 1);
+
+          // SUPER aggressive nonlinear fade
+          // Recent = visible, old = basically gone
+          const curve = Math.pow(1 - t, 4.0);
+
+          const isLatest = runTs.getTime() === newestMs;
+
+          traces.push({
+            x: r.points.map(p => toETDate(p.target_ts)),
+            y: r.points.map(p => p.mw),
+            type: "scatter",
+            mode: "lines",
+            line: {
+              color: isLatest ? COLOR_LATEST : COLOR_OLD,
+              width: isLatest ? 2.4 : 0.8
+            },
+            opacity: isLatest ? 1.0 : (0.005 + 0.25 * curve),
+            hovertemplate: isLatest
+              ? "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra>Latest</extra>"
+              : "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
+          });
+        });
+
+        const layout = {
+          margin: { l: 60, r: 20, t: 20, b: 40 },
+          xaxis: { title: "Hour (ET)" },
+          yaxis: { title: "MW" },
+          showlegend: false,
+          shapes: []
+        };
+
+        Plotly.newPlot("chart", traces, layout, {
+          displayModeBar: false,
+          responsive: true
+        });
+
+        // ---- NOW (ET) ----
+        const nowET = nowETDate();
+        Plotly.relayout("chart", {
+          shapes: [
+            {
+              type: "line",
+              xref: "x",
+              yref: "paper",
+              x0: nowET,
+              x1: nowET,
+              y0: 0,
+              y1: 1,
+              line: { color: "#000", width: 1, dash: "dot" }
+            }
+          ]
+        });
+      }
+
+      load();
+      setInterval(load, 60_000);
+    </script>
+  </body>
+</html>
