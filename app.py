@@ -21,9 +21,6 @@ def home(request: Request):
 
 
 def _table_has_feed_column(cur, table_name: str) -> bool:
-    """
-    Backward compatible: detect whether the DB schema has the 'feed' column.
-    """
     cur.execute(
         """
         SELECT 1
@@ -39,7 +36,7 @@ def _table_has_feed_column(cur, table_name: str) -> bool:
 @app.get("/api/latest")
 def latest(
     area: str = Query(default="RTO_COMBINED"),
-    feed: str = Query(default="7day", description="Dataset/feed name: 7day or vshort"),
+    feed: str = Query(default="7day"),
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -56,28 +53,43 @@ def latest(
                     """,
                     (feed, area),
                 )
-            else:
-                # Old schema fallback (ignores feed)
-                cur.execute(
-                    """
-                    SELECT area, run_ts, created_at
-                    FROM forecast_runs
-                    WHERE area=%s
-                    ORDER BY run_ts DESC
-                    LIMIT 1
-                    """,
-                    (area,),
-                )
+                row = cur.fetchone()
+                if not row:
+                    return {"feed": feed, "area": area, "run_ts": None}
+                return {
+                    "feed": row[0],
+                    "area": row[1],
+                    "run_ts": row[2].isoformat(),
+                    "created_at": row[3].isoformat() if row[3] else None,
+                }
 
+            # old schema fallback (no feed column)
+            cur.execute(
+                """
+                SELECT area, run_ts, created_at
+                FROM forecast_runs
+                WHERE area=%s
+                ORDER BY run_ts DESC
+                LIMIT 1
+                """,
+                (area,),
+            )
             row = cur.fetchone()
-            return row or {}
+            if not row:
+                return {"feed": feed, "area": area, "run_ts": None}
+            return {
+                "area": row[0],
+                "run_ts": row[1].isoformat(),
+                "created_at": row[2].isoformat() if row[2] else None,
+            }
 
 
 @app.get("/api/runs")
 def runs(
     area: str = Query(default="RTO_COMBINED"),
-    feed: str = Query(default="7day", description="Dataset/feed name: 7day or vshort"),
+    feed: str = Query(default="7day"),
     since_hours: int = Query(default=12, ge=1, le=168),
+    limit: int = Query(default=12, ge=1, le=100),
 ):
     since_ts = datetime.now(timezone.utc) - timedelta(hours=since_hours)
 
@@ -86,7 +98,7 @@ def runs(
             has_feed_runs = _table_has_feed_column(cur, "forecast_runs")
             has_feed_pts = _table_has_feed_column(cur, "forecast_points")
 
-            # 1) Get list of run timestamps
+            # ---- run list ----
             if has_feed_runs:
                 cur.execute(
                     """
@@ -94,8 +106,9 @@ def runs(
                     FROM forecast_runs
                     WHERE feed=%s AND area=%s AND run_ts >= %s
                     ORDER BY run_ts ASC
+                    LIMIT %s
                     """,
-                    (feed, area, since_ts),
+                    (feed, area, since_ts, limit),
                 )
             else:
                 cur.execute(
@@ -104,18 +117,18 @@ def runs(
                     FROM forecast_runs
                     WHERE area=%s AND run_ts >= %s
                     ORDER BY run_ts ASC
+                    LIMIT %s
                     """,
-                    (area, since_ts),
+                    (area, since_ts, limit),
                 )
 
             run_rows = cur.fetchall()
-            run_ts_list = [r["run_ts"] for r in run_rows]
+            run_ts_list = [r[0] for r in run_rows]  # tuple cursor => index 0
 
             if not run_ts_list:
-                # Keep response shape stable
                 return {"feed": feed, "area": area, "runs": []}
 
-            # 2) Fetch points for those runs
+            # ---- points ----
             if has_feed_pts:
                 cur.execute(
                     """
@@ -139,15 +152,13 @@ def runs(
 
             pts = cur.fetchall()
 
-    # Group points by run_ts
     runs_map = {}
-    for p in pts:
-        rt = p["run_ts"].isoformat()
+    for run_ts, target_ts, mw in pts:
+        rt = run_ts.isoformat()
         runs_map.setdefault(rt, []).append(
-            {"target_ts": p["target_ts"].isoformat(), "mw": float(p["mw"])}
+            {"target_ts": target_ts.isoformat(), "mw": float(mw)}
         )
 
-    # Preserve run ordering
     ordered_run_ts = [t.isoformat() for t in run_ts_list]
 
     return {
