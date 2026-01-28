@@ -42,7 +42,7 @@
       <div class="badge" id="status">Loading…</div>
     </div>
     <div class="hint">
-      Latest run is bold. Older runs fade hard. Times shown in ET.
+      Latest forecast is red. Older runs fade aggressively. Times shown in ET.
     </div>
 
     <div id="chart"></div>
@@ -51,7 +51,9 @@
       const AREA = "RTO_COMBINED";
       const SINCE_HOURS = 12;
       const TIMEZONE = "America/New_York";
-      const LINE_COLOR = "#1f77b4";
+
+      const COLOR_LATEST = "#d62728"; // red
+      const COLOR_OLD = "#1f77b4";    // blue
 
       function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v));
@@ -67,102 +69,19 @@
       }
 
       async function load() {
+        // ---- latest run badge ----
         const latestResp = await fetch(`/api/latest?area=${encodeURIComponent(AREA)}`);
         const latest = await latestResp.json();
         document.getElementById("status").textContent =
           latest && latest.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
 
+        // ---- runs ----
         const runsResp = await fetch(
           `/api/runs?area=${encodeURIComponent(AREA)}&since_hours=${encodeURIComponent(SINCE_HOURS)}`
         );
         const data = await runsResp.json();
         const runs = (data && data.runs) ? data.runs : [];
-        if (!runs.length) {
-          Plotly.newPlot("chart", [], {
-            margin: { l: 60, r: 20, t: 20, b: 40 },
-            xaxis: { title: "Hour (ET)" },
-            yaxis: { title: "MW" },
-            annotations: [
-              { text: "No data yet", xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false }
-            ]
-          }, { displayModeBar: false, responsive: true });
-          return;
-        }
+        if (!runs.length) return;
 
         const now = new Date();
-        const maxAgeMin = SINCE_HOURS * 60;
-        const newestMs = Math.max(...runs.map(rr => new Date(rr.run_ts).getTime()));
-        const traces = [];
-
-        runs.forEach((r) => {
-          const runTs = new Date(r.run_ts);
-          const ageMin = (now - runTs) / 60000;
-
-          // 0 newest -> 1 oldest (within window)
-          const t = clamp(ageMin / maxAgeMin, 0, 1);
-
-          // EXTREME nonlinear fade:
-          // - recent stays visible
-          // - mid-old fades quickly
-          // - very old becomes almost invisible
-          const curve = Math.pow(1 - t, 3.0); // cubic: 1 .. 0 very fast
-
-          // Opacity: 1.0 -> 0.01 (very extreme)
-          const opacity = 0.01 + 0.99 * curve;
-
-          // Width: 5.0 -> 0.6 (very obvious)
-          const width = 0.6 + 4.4 * curve;
-
-          const isLatest = runTs.getTime() === newestMs;
-
-          traces.push({
-            x: r.points.map(p => toETDate(p.target_ts)),
-            y: r.points.map(p => p.mw),
-            type: "scatter",
-            mode: "lines",
-            line: {
-              color: LINE_COLOR,
-              width: width
-            },
-            opacity: opacity,
-            hovertemplate: isLatest
-              ? "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra>Latest</extra>"
-              : "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
-          });
-        });
-
-        const layout = {
-          margin: { l: 60, r: 20, t: 20, b: 40 },
-          xaxis: { title: "Hour (ET)" },
-          yaxis: { title: "MW" },
-          showlegend: false,
-          shapes: []
-        };
-
-        Plotly.newPlot("chart", traces, layout, {
-          displayModeBar: false,
-          responsive: true
-        });
-
-        const nowET = nowETDate();
-        Plotly.relayout("chart", {
-          shapes: [
-            {
-              type: "line",
-              xref: "x",
-              yref: "paper",
-              x0: nowET,
-              x1: nowET,
-              y0: 0,
-              y1: 1,
-              line: { color: "red", width: 1, dash: "dot" }
-            }
-          ]
-        });
-      }
-
-      load();
-      setInterval(load, 60_000);
-    </script>
-  </body>
-</html>
+        const maxAgeMin = SIN
