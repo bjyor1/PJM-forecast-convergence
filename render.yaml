@@ -15,7 +15,7 @@ services:
       - key: AREA_FILTER
         value: RTO_COMBINED
       - key: RETENTION_DAYS
-        value: "7"
+        value: "8"
 
         
 
@@ -34,13 +34,14 @@ services:
       - key: AREA_FILTER
         value: RTO_COMBINED
       - key: RETENTION_DAYS
-        value: "7"
+        value: "8"
 
         
 
 databases:
   - name: pjm-forecast-db
     plan: basic-256mb
+
 
 
 
