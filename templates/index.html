@@ -42,20 +42,16 @@
       <div class="badge" id="status">Loading…</div>
     </div>
     <div class="hint">
-      Latest run is boldest; older runs fade & thin. Times shown in ET.
+      Latest run is bold. Older runs fade hard. Times shown in ET.
     </div>
 
     <div id="chart"></div>
 
     <script>
       const AREA = "RTO_COMBINED";
-      const SINCE_HOURS = 12; // how many past runs to show
+      const SINCE_HOURS = 12;
       const TIMEZONE = "America/New_York";
-
-      // One hue, strong visual hierarchy:
-      // - newest: fully opaque, thick
-      // - old: faint, thin
-      const LINE_COLOR = "#1f77b4"; // readable blue
+      const LINE_COLOR = "#1f77b4";
 
       function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v));
@@ -71,13 +67,11 @@
       }
 
       async function load() {
-        // ---- latest run badge ----
         const latestResp = await fetch(`/api/latest?area=${encodeURIComponent(AREA)}`);
         const latest = await latestResp.json();
         document.getElementById("status").textContent =
           latest && latest.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
 
-        // ---- forecast runs ----
         const runsResp = await fetch(
           `/api/runs?area=${encodeURIComponent(AREA)}&since_hours=${encodeURIComponent(SINCE_HOURS)}`
         );
@@ -97,24 +91,27 @@
 
         const now = new Date();
         const maxAgeMin = SINCE_HOURS * 60;
-
-        // newest run timestamp (ms)
         const newestMs = Math.max(...runs.map(rr => new Date(rr.run_ts).getTime()));
-
         const traces = [];
 
         runs.forEach((r) => {
           const runTs = new Date(r.run_ts);
           const ageMin = (now - runTs) / 60000;
 
-          // 0 = newest, 1 = oldest (within SINCE_HOURS window)
+          // 0 newest -> 1 oldest (within window)
           const t = clamp(ageMin / maxAgeMin, 0, 1);
 
-          // Opacity: newest 1.00 -> oldest 0.08 (still visible)
-          const opacity = 1.0 - t * 0.92; // 1.00 .. 0.08
+          // EXTREME nonlinear fade:
+          // - recent stays visible
+          // - mid-old fades quickly
+          // - very old becomes almost invisible
+          const curve = Math.pow(1 - t, 3.0); // cubic: 1 .. 0 very fast
 
-          // Width: newest 3.2 -> oldest 1.0
-          const width = 1.0 + (1 - t) * 2.2; // 3.2 .. 1.0
+          // Opacity: 1.0 -> 0.01 (very extreme)
+          const opacity = 0.01 + 0.99 * curve;
+
+          // Width: 5.0 -> 0.6 (very obvious)
+          const width = 0.6 + 4.4 * curve;
 
           const isLatest = runTs.getTime() === newestMs;
 
@@ -147,7 +144,6 @@
           responsive: true
         });
 
-        // ---- NOW (ET) vertical line ----
         const nowET = nowETDate();
         Plotly.relayout("chart", {
           shapes: [
