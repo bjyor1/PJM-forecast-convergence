@@ -17,6 +17,8 @@ services:
       - key: RETENTION_DAYS
         value: "7"
 
+        
+
   - type: cron
     name: pjm-forecast-ingest
     env: docker
@@ -34,8 +36,11 @@ services:
       - key: RETENTION_DAYS
         value: "7"
 
+        
+
 databases:
   - name: pjm-forecast-db
     plan: basic-256mb
+
 
 
