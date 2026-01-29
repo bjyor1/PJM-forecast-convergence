@@ -1,26 +1,3 @@
-# ingest.py
-#
-# Ingest PJM load forecast datasets into Postgres.
-# - "7day" (hourly load forecast; you already have this working)
-# - "vshort" (very short / 5-min load forecast feed)
-#
-# Uses Playwright Chromium to capture the Ocp-Apim-Subscription-Key from dataminer2.pjm.com,
-# then calls api.pjm.com CSV endpoints with that key.
-#
-# Required env:
-#   DATABASE_URL
-#   PJM_7DAY_URL
-#   PJM_VSHORT_URL
-#
-# Optional env:
-#   DATAMINER_URL=https://dataminer2.pjm.com/
-#   AREA_FILTER=RTO_COMBINED
-#   RETENTION_DAYS=7
-#   HORIZON_HOURS_7DAY=48   (or higher if you ingest/store more)
-#   HORIZON_HOURS_VSHORT=2  (very short is typically ~2 hours)
-#   MIN_POINTS_7DAY=10
-#   MIN_POINTS_VSHORT=10
-
 import os, json, hashlib
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -40,6 +17,7 @@ PJM_VSHORT_URL = os.environ["PJM_VSHORT_URL"]
 
 HORIZON_HOURS_7DAY = int(os.environ.get("HORIZON_HOURS_7DAY", "48"))
 HORIZON_HOURS_VSHORT = int(os.environ.get("HORIZON_HOURS_VSHORT", "2"))
+VSHORT_LOOKBACK_HOURS = int(os.environ.get("VSHORT_LOOKBACK_HOURS", "1"))
 
 MIN_POINTS_7DAY = int(os.environ.get("MIN_POINTS_7DAY", "10"))
 MIN_POINTS_VSHORT = int(os.environ.get("MIN_POINTS_VSHORT", "10"))
@@ -50,10 +28,6 @@ def sha256_bytes(b: bytes) -> str:
 
 
 def get_subscription_key_via_browser() -> str:
-    """
-    Launch headless Chromium, load Data Miner, and capture the Ocp-Apim-Subscription-Key
-    from the site's own API calls.
-    """
     sub_key = {"value": None}
 
     with sync_playwright() as p:
@@ -72,7 +46,6 @@ def get_subscription_key_via_browser() -> str:
         page = context.new_page()
         page.goto(DATAMINER_URL, wait_until="domcontentloaded", timeout=60_000)
 
-        # Give the app time to issue API calls
         try:
             page.wait_for_timeout(3000)
         except PWTimeout:
@@ -107,10 +80,6 @@ def parse_csv(csv_bytes: bytes) -> pd.DataFrame:
 
 
 def infer_columns(df: pd.DataFrame):
-    """
-    Infer columns in a robust way. Different PJM feeds sometimes use slightly different names.
-    We try common variants and fall back to errors with a clear message.
-    """
     lower = {c.lower(): c for c in df.columns}
 
     def find_one(cands):
@@ -120,17 +89,18 @@ def infer_columns(df: pd.DataFrame):
         return None
 
     col_area = find_one(["forecast_area", "area", "zone", "region"])
+
+    # Prefer the "beginning" timestamp when available
     col_target = find_one([
         "forecast_datetime_beginning_utc",
-        "forecast_datetime_ending_utc",
-        "forecast_datetime_utc",
         "forecast_datetime_beginning_ept",
+        "forecast_datetime_utc",
         "forecast_datetime_ept",
         "datetime_utc",
         "datetime_ept",
-        "target_ts",
         "forecast_datetime",
     ])
+
     col_mw = find_one([
         "forecast_load_mw",
         "load_forecast_mw",
@@ -151,7 +121,10 @@ def infer_columns(df: pd.DataFrame):
 
 def normalize_points(df: pd.DataFrame, col_area: str, col_target: str, col_mw: str) -> pd.DataFrame:
     df = df[df[col_area] == AREA_FILTER].copy()
+
+    # Avoid slow per-element parsing warnings by letting pandas infer, but coerce bad values.
     df["target_ts"] = pd.to_datetime(df[col_target], utc=True, errors="coerce")
+
     df = df.dropna(subset=["target_ts"])
     df["mw_val"] = pd.to_numeric(df[col_mw], errors="coerce")
     df = df.dropna(subset=["mw_val"])
@@ -170,20 +143,25 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
     col_area, col_target, col_mw = infer_columns(df)
     df = normalize_points(df, col_area, col_target, col_mw)
 
-    # Trim to horizon end (do NOT trim front; your UI can)
+    # Always trim the back
     df = df[df["target_ts"] < window_end]
 
+    # For vshort, also trim the front hard (avoid ancient rows)
+    if feed == "vshort":
+        window_start = now - timedelta(hours=VSHORT_LOOKBACK_HOURS)
+        df = df[df["target_ts"] >= window_start]
+
+    # De-dupe target timestamps within the same run (prevents same-run collisions)
+    df = df.drop_duplicates(subset=["target_ts"], keep="last")
+
     if len(df) < min_points:
-        raise RuntimeError(
-            f"{feed}: too few points after filtering ({len(df)}). "
-            f"Check AREA_FILTER={AREA_FILTER}, horizon_hours={horizon_hours}, or URL params."
-        )
+        raise RuntimeError(f"{feed}: too few points after filtering ({len(df)}). Check URL params / AREA_FILTER.")
 
     points = [(t.to_pydatetime(), float(mw)) for t, mw in zip(df["target_ts"], df["mw_val"])]
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Dedupe by payload hash (per feed+area)
+            # Dedupe run by payload hash
             cur.execute(
                 "SELECT 1 FROM forecast_runs WHERE feed=%s AND area=%s AND payload_hash=%s",
                 (feed, AREA_FILTER, payload_hash),
@@ -196,8 +174,13 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
                 (feed, AREA_FILTER, now, payload_hash),
             )
 
+            # Insert points safely (won't crash if a duplicate sneaks through)
             cur.executemany(
-                "INSERT INTO forecast_points(feed, area, run_ts, target_ts, mw) VALUES (%s,%s,%s,%s,%s)",
+                """
+                INSERT INTO forecast_points(feed, area, run_ts, target_ts, mw)
+                VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
+                """,
                 [(feed, AREA_FILTER, now, t, mw) for (t, mw) in points],
             )
 
