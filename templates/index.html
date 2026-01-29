@@ -48,7 +48,9 @@
         <h3>Hourly Load Forecast (7day feed)</h3>
         <div class="badge" id="badge-7day">Loading…</div>
       </div>
-      <div class="sub">Chart shows the latest 12 forecast updates. Table shading is relative within each load timestamp column (green low → red high). Table trims past hours (start at ET current hour - 1).</div>
+      <div class="sub">
+        Chart shows the latest 12 forecast updates. Now line is in ET. Chart is clipped to midnight ET today.
+      </div>
 
       <div id="chart-7day" class="chart"></div>
 
@@ -64,7 +66,9 @@
         <h3>Very Short Load Forecast (5-minute feed)</h3>
         <div class="badge" id="badge-vshort">Loading…</div>
       </div>
-      <div class="sub">This feed is ~2 hours forward in 5-minute steps. Same visualization logic as hourly.</div>
+      <div class="sub">
+        This feed is ~2 hours forward in 5-minute steps. Same visualization logic as hourly. Chart is clipped to midnight ET today.
+      </div>
 
       <div id="chart-vshort" class="chart"></div>
 
@@ -79,18 +83,29 @@
       const TIMEZONE = "America/New_York";
 
       const MAX_RUNS = 12;
+
+      // Table trimming behavior: keep your existing intent (current hour - 1)
       const TABLE_LOOKBACK_HOURS = 1;
 
       const COLOR_LATEST = "#d62728";
       const COLOR_OLD = "#1f77b4";
 
-      function toETDate(utcIso) {
-        const d = new Date(utcIso);
-        return new Date(d.toLocaleString("en-US", { timeZone: TIMEZONE }));
+      // ---- Time helpers (ET) ----
+
+      function etNow() {
+        // Date object whose wall-clock matches ET (constructed via locale string)
+        return new Date(new Date().toLocaleString("en-US", { timeZone: TIMEZONE }));
       }
 
-      function nowETDate() {
-        return new Date(new Date().toLocaleString("en-US", { timeZone: TIMEZONE }));
+      function etFromIso(isoUtc) {
+        return new Date(new Date(isoUtc).toLocaleString("en-US", { timeZone: TIMEZONE }));
+      }
+
+      function etMidnightToday() {
+        const n = etNow();
+        const d = new Date(n);
+        d.setHours(0, 0, 0, 0);
+        return d;
       }
 
       function floorToHour(d) {
@@ -100,16 +115,29 @@
       }
 
       function fmtET(dt) {
-        return dt.toISOString().slice(0,16).replace("T"," ");
+        // dt is already an ET-wallclock Date
+        const yyyy = dt.getFullYear();
+        const mm = String(dt.getMonth() + 1).padStart(2, "0");
+        const dd = String(dt.getDate()).padStart(2, "0");
+        const hh = String(dt.getHours()).padStart(2, "0");
+        const mi = String(dt.getMinutes()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
       }
 
       function fmtETShort(dt) {
-        return fmtET(dt).slice(5);
+        // MM-DD HH:MM
+        const mm = String(dt.getMonth() + 1).padStart(2, "0");
+        const dd = String(dt.getDate()).padStart(2, "0");
+        const hh = String(dt.getHours()).padStart(2, "0");
+        const mi = String(dt.getMinutes()).padStart(2, "0");
+        return `${mm}-${dd} ${hh}:${mi}`;
       }
 
       function fmtMW(v) {
         return Math.round(v).toLocaleString("en-US");
       }
+
+      // ---- Table shading ----
 
       function colorForColumnRelative(t) {
         if (t === null || !isFinite(t)) return "rgba(0,0,0,0.03)";
@@ -120,24 +148,16 @@
           : `rgba(40,167,69,${alpha})`;  // green
       }
 
-      function pickLatestRuns(runs) {
-        return [...runs]
-          .sort((a,b) => new Date(a.run_ts) - new Date(b.run_ts))
-          .slice(-MAX_RUNS);
-      }
-
       function buildMatrixTable(runs, tableElId) {
         const runsSorted = [...runs].sort((a,b) => new Date(a.run_ts) - new Date(b.run_ts));
 
-        // columns = union of all target_ts
         const colSet = new Set();
         runsSorted.forEach(r => r.points.forEach(p => colSet.add(p.target_ts)));
 
         const colUtcAll = [...colSet].sort((a,b)=>new Date(a)-new Date(b));
-        const colEtAll  = colUtcAll.map(toETDate);
+        const colEtAll  = colUtcAll.map(etFromIso);
 
-        // table front trim: start at current ET hour - 1h
-        const nowET = nowETDate();
+        const nowET = etNow();
         const tableStartET = new Date(floorToHour(nowET).getTime() - TABLE_LOOKBACK_HOURS*3600000);
 
         const keptIdx = colEtAll
@@ -148,14 +168,12 @@
         const colUtc = keptIdx.map(i => colUtcAll[i]);
         const colEt  = keptIdx.map(i => colEtAll[i]);
 
-        // map run -> target_ts -> mw
         const mwMaps = runsSorted.map(r => {
           const m = new Map();
           r.points.forEach(p => m.set(p.target_ts, p.mw));
           return m;
         });
 
-        // per-column min/max across runs (for shading)
         const colMinMax = colUtc.map(ts => {
           const vals = mwMaps.map(m => m.get(ts)).filter(v => v != null);
           return vals.length ? {min: Math.min(...vals), max: Math.max(...vals)} : {min: null, max: null};
@@ -166,9 +184,8 @@
         colEt.forEach(d => html += `<th class="mono">${fmtETShort(d)}</th>`);
         html += "</tr></thead><tbody>";
 
-        // newest at top
         for (let i = runsSorted.length - 1; i >= 0; i--) {
-          const runEt = toETDate(runsSorted[i].run_ts);
+          const runEt = etFromIso(runsSorted[i].run_ts);
           html += `<tr><td class="sticky-left mono">${fmtET(runEt)}</td>`;
 
           colUtc.forEach((ts,j) => {
@@ -189,64 +206,124 @@
         document.getElementById(tableElId).innerHTML = html;
       }
 
-      async function renderPanel(feed, chartElId, badgeElId, tableElId, sinceHours) {
-        // badge
-        const latest = await (await fetch(`/api/latest?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}`)).json();
-        document.getElementById(badgeElId).textContent =
-          latest?.run_ts ? `Last ingest: ${latest.run_ts}` : "No data";
+      // ---- Plotly helpers ----
 
-        // runs
-        const data = await (await fetch(`/api/runs?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}&since_hours=${sinceHours}&limit=${MAX_RUNS}`)).json();
+      function buildNowLineShape(nowEtDate) {
+        return {
+          name: "nowLine",
+          type: "line",
+          xref: "x",
+          yref: "paper",
+          x0: nowEtDate,
+          x1: nowEtDate,
+          y0: 0,
+          y1: 1,
+          line: { width: 2, dash: "dot" }
+        };
+      }
+
+      function buildNowLabelAnnotation(nowEtDate) {
+        return {
+          x: nowEtDate,
+          y: 1,
+          xref: "x",
+          yref: "paper",
+          xanchor: "left",
+          yanchor: "bottom",
+          text: "Now",
+          showarrow: false,
+          font: { size: 12 }
+        };
+      }
+
+      function sortRunsAsc(runs) {
+        return [...runs].sort((a,b) => new Date(a.run_ts) - new Date(b.run_ts));
+      }
+
+      function chooseNewestRunTs(runs) {
+        return runs.reduce((acc, r) => {
+          const t = new Date(r.run_ts).getTime();
+          return Math.max(acc, t);
+        }, 0);
+      }
+
+      async function renderPanel(feed, chartElId, badgeElId, tableElId, sinceHours) {
+        // Latest ingest badge (display as ET)
+        const latest = await (await fetch(`/api/latest?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}`)).json();
+        if (latest?.run_ts) {
+          document.getElementById(badgeElId).textContent = `Last ingest (ET): ${fmtET(etFromIso(latest.run_ts))}`;
+        } else {
+          document.getElementById(badgeElId).textContent = "No data";
+        }
+
+        // Runs: server clips to midnight ET today + returns meta
+        const url =
+          `/api/runs?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}` +
+          `&since_hours=${sinceHours}&limit=${MAX_RUNS}&clip_to_midnight_et=true`;
+
+        const data = await (await fetch(url)).json();
+
         if (!data?.runs?.length) {
           Plotly.purge(chartElId);
           document.getElementById(tableElId).innerHTML = "<div style='padding:10px;color:#666;'>No data yet.</div>";
           return;
         }
 
-        const runs = pickLatestRuns(data.runs);
+        const runs = sortRunsAsc(data.runs);
+        const newestMs = chooseNewestRunTs(runs);
 
-        // chart
-        const newest = Math.max(...runs.map(r => new Date(r.run_ts).getTime()));
+        // X-axis min: midnight ET today (client enforced)
+        const xMin = etMidnightToday();
+
+        // "Now" (ET): prefer server-provided, fallback to local ET
+        const nowEt = data?.meta?.now_et ? etFromIso(data.meta.now_et) : etNow();
+
+        // Build traces
         const traces = runs.map((r, i) => {
-          const isLatest = new Date(r.run_ts).getTime() === newest;
+          const isLatest = new Date(r.run_ts).getTime() === newestMs;
 
-          // opacity ramp: old still visible
-          const frac = (runs.length <= 1) ? 1 : i / (runs.length - 1); // older -> smaller i
-          const opacity = isLatest ? 1 : (0.35 + 0.55 * Math.pow(frac, 0.8)); // 0.35..0.90
+          // Filter any stragglers before midnight ET (belt + suspenders)
+          const pts = r.points
+            .map(p => ({ x: etFromIso(p.target_ts), y: p.mw }))
+            .filter(p => p.x >= xMin);
+
+          const frac = (runs.length <= 1) ? 1 : i / (runs.length - 1);
+          const opacity = isLatest ? 1 : (0.35 + 0.55 * Math.pow(frac, 0.8));
 
           return {
-            x: r.points.map(p => toETDate(p.target_ts)),
-            y: r.points.map(p => p.mw),
+            x: pts.map(p => p.x),
+            y: pts.map(p => p.y),
             mode: "lines",
-            line: {
-              color: isLatest ? COLOR_LATEST : COLOR_OLD,
-              width: isLatest ? 2.6 : 1.2
-            },
-            opacity
+            line: { color: isLatest ? COLOR_LATEST : COLOR_OLD, width: isLatest ? 2.6 : 1.2 },
+            opacity,
+            hovertemplate: "%{x|%m-%d %H:%M} ET<br>%{y:.0f} MW<extra></extra>"
           };
         });
 
-        Plotly.newPlot(chartElId, traces, {
-          xaxis: { title: "Hour (ET)" },
+        const layout = {
+          xaxis: {
+            title: "Time (ET)",
+            range: [xMin, null] // clip to midnight ET today
+          },
           yaxis: { title: "MW" },
           showlegend: false,
-          margin: { l: 60, r: 20, t: 10, b: 50 }
-        }, { displayModeBar: false });
+          margin: { l: 60, r: 20, t: 10, b: 50 },
+          shapes: [buildNowLineShape(nowEt)],
+          annotations: [buildNowLabelAnnotation(nowEt)]
+        };
 
-        // table
+        await Plotly.newPlot(chartElId, traces, layout, { displayModeBar: false, responsive: true });
+
+        // Table (keep your original behavior)
         buildMatrixTable(runs, tableElId);
       }
 
       async function loadAll() {
-        // overall status just shows web alive + last 7day ingest if present
-        const latest7 = await (await fetch(`/api/latest?feed=7day&area=${AREA}`)).json();
+        const latest7 = await (await fetch(`/api/latest?feed=7day&area=${encodeURIComponent(AREA)}`)).json();
         document.getElementById("status").textContent =
-          latest7?.run_ts ? `Last ingest (7day): ${latest7.run_ts}` : "No data";
+          latest7?.run_ts ? `Last ingest (7day, ET): ${fmtET(etFromIso(latest7.run_ts))}` : "No data";
 
-        // 7day: show last ~3 days of runs so you get 12 lines if you ingest often
         await renderPanel("7day", "chart-7day", "badge-7day", "table-7day", 72);
-
-        // vshort: updates more often, but we still just want the latest 12 runs
         await renderPanel("vshort", "chart-vshort", "badge-vshort", "table-vshort", 24);
       }
 
