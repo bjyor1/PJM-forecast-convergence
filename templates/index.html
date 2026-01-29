@@ -8,161 +8,81 @@
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 
     <style>
-      body {
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        margin: 16px;
-      }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+      .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .badge { padding: 6px 10px; border: 1px solid #ddd; border-radius: 999px; font-size: 14px; }
+      .hint { color: #666; font-size: 13px; margin-top: 6px; }
 
-      #chart {
-        width: 100%;
-        height: 70vh;
-      }
+      .panel { margin-top: 18px; padding-top: 14px; border-top: 1px solid #eee; }
+      .panel h3 { margin: 0; font-size: 18px; }
+      .panel .sub { color: #666; font-size: 13px; margin-top: 4px; }
 
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
+      .chart { width: 100%; height: 58vh; margin-top: 10px; }
 
-      .badge {
-        padding: 6px 10px;
-        border: 1px solid #ddd;
-        border-radius: 999px;
-        font-size: 14px;
-      }
+      .section-title { margin: 12px 0 8px; font-size: 15px; font-weight: 650; }
 
-      .hint {
-        color: #666;
-        font-size: 13px;
-        margin-top: 6px;
-      }
-
-      .section-title {
-        margin: 18px 0 8px;
-        font-size: 16px;
-        font-weight: 650;
-      }
-
-      .table-wrap {
-        border: 1px solid #e5e5e5;
-        border-radius: 10px;
-        overflow: hidden;
-      }
-
-      .table-scroll {
-        overflow: auto;
-        max-height: 55vh;
-        background: #fff;
-      }
-
-      table {
-        border-collapse: collapse;
-        width: max-content;
-        min-width: 100%;
-      }
-
-      th, td {
-        border: 1px solid #eee;
-        padding: 6px 8px;
-        font-size: 12px;
-        white-space: nowrap;
-      }
-
-      th {
-        position: sticky;
-        top: 0;
-        background: #fafafa;
-        z-index: 2;
-        font-weight: 650;
-      }
-
-      th.sticky-left, td.sticky-left {
-        position: sticky;
-        left: 0;
-        z-index: 3;
-        background: #fafafa;
-        font-weight: 650;
-      }
-
-      td.sticky-left {
-        background: #fff;
-        font-weight: 600;
-      }
-
-      .cell {
-        text-align: right;
-        min-width: 84px;
-      }
-
-      .mono {
-        font-variant-numeric: tabular-nums;
-      }
-
-      .legend {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        flex-wrap: wrap;
-        color: #666;
-        font-size: 13px;
-        margin-bottom: 8px;
-      }
-
-      .swatch {
-        width: 16px;
-        height: 10px;
-        border-radius: 2px;
-        border: 1px solid rgba(0,0,0,0.08);
-      }
+      .table-wrap { border: 1px solid #e5e5e5; border-radius: 10px; overflow: hidden; }
+      .table-scroll { overflow: auto; max-height: 55vh; background: #fff; }
+      table { border-collapse: collapse; width: max-content; min-width: 100%; }
+      th, td { border: 1px solid #eee; padding: 6px 8px; font-size: 12px; white-space: nowrap; }
+      th { position: sticky; top: 0; background: #fafafa; z-index: 2; font-weight: 650; }
+      th.sticky-left, td.sticky-left { position: sticky; left: 0; z-index: 3; background: #fafafa; font-weight: 650; }
+      td.sticky-left { background: #fff; font-weight: 600; }
+      .cell { text-align: right; min-width: 84px; }
+      .mono { font-variant-numeric: tabular-nums; }
     </style>
   </head>
 
   <body>
     <div class="row">
-      <h2 style="margin: 0;">PJM Load Forecast Convergence</h2>
+      <h2 style="margin:0;">PJM Load Forecast Convergence</h2>
       <div class="badge" id="status">Loading…</div>
     </div>
     <div class="hint">
-      Chart: latest run is red. Table: colors are relative within each load-hour column (green = lower, red = higher). Times shown in ET.
+      Two datasets: Hourly (7day) and 5-minute (very short). Latest run is red. Times shown in ET.
     </div>
 
-    <div id="chart"></div>
+    <!-- PANEL: 7DAY -->
+    <div class="panel">
+      <div class="row">
+        <h3>Hourly Load Forecast (7day feed)</h3>
+        <div class="badge" id="badge-7day">Loading…</div>
+      </div>
+      <div class="sub">Chart shows the latest 12 forecast updates. Table shading is relative within each load timestamp column (green low → red high). Table trims past hours (start at ET current hour - 1).</div>
 
-    <div class="section-title">Forecast Matrix (Forecast release × Load datetime)</div>
-    <div class="legend">
-      <div class="row" style="gap:8px;">
-        <div class="swatch" style="background: rgba(40, 167, 69, 0.65);"></div>
-        <div>Lower (within column)</div>
-      </div>
-      <div class="row" style="gap:8px;">
-        <div class="swatch" style="background: rgba(220, 53, 69, 0.65);"></div>
-        <div>Higher (within column)</div>
-      </div>
-      <div class="row" style="gap:8px;">
-        <div class="swatch" style="background: rgba(0, 0, 0, 0.04);"></div>
-        <div>Middle / missing</div>
+      <div id="chart-7day" class="chart"></div>
+
+      <div class="section-title">Forecast Matrix (Forecast release × Load datetime)</div>
+      <div class="table-wrap">
+        <div class="table-scroll" id="table-7day"></div>
       </div>
     </div>
 
-    <div class="table-wrap">
-      <div class="table-scroll" id="table-container"></div>
+    <!-- PANEL: VSHORT -->
+    <div class="panel">
+      <div class="row">
+        <h3>Very Short Load Forecast (5-minute feed)</h3>
+        <div class="badge" id="badge-vshort">Loading…</div>
+      </div>
+      <div class="sub">This feed is ~2 hours forward in 5-minute steps. Same visualization logic as hourly.</div>
+
+      <div id="chart-vshort" class="chart"></div>
+
+      <div class="section-title">Forecast Matrix (Forecast release × Load datetime)</div>
+      <div class="table-wrap">
+        <div class="table-scroll" id="table-vshort"></div>
+      </div>
     </div>
 
     <script>
       const AREA = "RTO_COMBINED";
       const TIMEZONE = "America/New_York";
 
-      // Keep only the latest N forecast updates (runs) for BOTH chart and table.
       const MAX_RUNS = 12;
+      const TABLE_LOOKBACK_HOURS = 1;
 
-      // Chart styling
-      const COLOR_LATEST = "#d62728"; // red
-      const COLOR_OLD = "#1f77b4";    // blue
-
-      function clamp(v, lo, hi) {
-        return Math.max(lo, Math.min(hi, v));
-      }
+      const COLOR_LATEST = "#d62728";
+      const COLOR_OLD = "#1f77b4";
 
       function toETDate(utcIso) {
         const d = new Date(utcIso);
@@ -173,215 +93,165 @@
         return new Date(new Date().toLocaleString("en-US", { timeZone: TIMEZONE }));
       }
 
+      function floorToHour(d) {
+        const x = new Date(d);
+        x.setMinutes(0, 0, 0);
+        return x;
+      }
+
       function fmtET(dt) {
-        const y = dt.getFullYear();
-        const mo = String(dt.getMonth() + 1).padStart(2, "0");
-        const da = String(dt.getDate()).padStart(2, "0");
-        const hh = String(dt.getHours()).padStart(2, "0");
-        const mm = String(dt.getMinutes()).padStart(2, "0");
-        return `${y}-${mo}-${da} ${hh}:${mm}`;
+        return dt.toISOString().slice(0,16).replace("T"," ");
       }
 
       function fmtETShort(dt) {
-        const mo = String(dt.getMonth() + 1).padStart(2, "0");
-        const da = String(dt.getDate()).padStart(2, "0");
-        const hh = String(dt.getHours()).padStart(2, "0");
-        const mm = String(dt.getMinutes()).padStart(2, "0");
-        return `${mo}-${da} ${hh}:${mm}`;
+        return fmtET(dt).slice(5);
       }
 
       function fmtMW(v) {
-        return (Math.round(v)).toLocaleString("en-US");
+        return Math.round(v).toLocaleString("en-US");
       }
 
-      // Column-relative shading helper:
-      // given t in [0,1] where 0=min (green) and 1=max (red), shade by distance from mid.
       function colorForColumnRelative(t) {
-        if (t === null || t === undefined || !isFinite(t)) return "rgba(0,0,0,0.03)";
-
-        const dist = Math.abs(t - 0.5) * 2; // 0..1
-        const alpha = 0.08 + 0.70 * Math.pow(dist, 0.75); // 0.08..0.78
-
-        if (t > 0.5) return `rgba(220, 53, 69, ${alpha})`; // red
-        if (t < 0.5) return `rgba(40, 167, 69, ${alpha})`; // green
-        return "rgba(0,0,0,0.03)";
+        if (t === null || !isFinite(t)) return "rgba(0,0,0,0.03)";
+        const dist = Math.abs(t - 0.5) * 2;
+        const alpha = 0.10 + 0.65 * Math.pow(dist, 0.85);
+        return t > 0.5
+          ? `rgba(220,53,69,${alpha})`   // red
+          : `rgba(40,167,69,${alpha})`;  // green
       }
 
-      function pickLatestRuns(runs, maxRuns) {
-        // Ensure newest are kept, but preserve chronological order for rendering if needed.
-        const sorted = [...runs].sort((a, b) => new Date(a.run_ts) - new Date(b.run_ts)); // oldest->newest
-        const sliced = sorted.slice(Math.max(0, sorted.length - maxRuns));
-        return sliced; // still oldest->newest
+      function pickLatestRuns(runs) {
+        return [...runs]
+          .sort((a,b) => new Date(a.run_ts) - new Date(b.run_ts))
+          .slice(-MAX_RUNS);
       }
 
-      function buildMatrixTable(runsLimited) {
-        // Rows = forecast release timestamp (ET)
-        // Cols = load datetime (ET)
-        // Shading = relative within each column (same load hour)
+      function buildMatrixTable(runs, tableElId) {
+        const runsSorted = [...runs].sort((a,b) => new Date(a.run_ts) - new Date(b.run_ts));
 
-        const runsSorted = [...runsLimited].sort((a, b) => new Date(a.run_ts) - new Date(b.run_ts)); // oldest->newest
-
-        // Columns (load datetimes)
+        // columns = union of all target_ts
         const colSet = new Set();
         runsSorted.forEach(r => r.points.forEach(p => colSet.add(p.target_ts)));
-        const colUtc = [...colSet].sort((a, b) => new Date(a) - new Date(b));
-        const colEt = colUtc.map(ts => toETDate(ts));
-        const colLabels = colEt.map(d => fmtETShort(d));
 
-        // Lookup: runIndex -> Map(target_ts -> mw)
+        const colUtcAll = [...colSet].sort((a,b)=>new Date(a)-new Date(b));
+        const colEtAll  = colUtcAll.map(toETDate);
+
+        // table front trim: start at current ET hour - 1h
+        const nowET = nowETDate();
+        const tableStartET = new Date(floorToHour(nowET).getTime() - TABLE_LOOKBACK_HOURS*3600000);
+
+        const keptIdx = colEtAll
+          .map((d,i)=>({d,i}))
+          .filter(o => o.d >= tableStartET)
+          .map(o => o.i);
+
+        const colUtc = keptIdx.map(i => colUtcAll[i]);
+        const colEt  = keptIdx.map(i => colEtAll[i]);
+
+        // map run -> target_ts -> mw
         const mwMaps = runsSorted.map(r => {
           const m = new Map();
           r.points.forEach(p => m.set(p.target_ts, p.mw));
           return m;
         });
 
-        // For each column, min/max across runs
+        // per-column min/max across runs (for shading)
         const colMinMax = colUtc.map(ts => {
-          const vals = [];
-          for (let i = 0; i < mwMaps.length; i++) {
-            const v = mwMaps[i].get(ts);
-            if (v !== undefined && v !== null && isFinite(v)) vals.push(v);
-          }
-          if (!vals.length) return { min: null, max: null };
-          let mn = vals[0], mx = vals[0];
-          for (let k = 1; k < vals.length; k++) {
-            if (vals[k] < mn) mn = vals[k];
-            if (vals[k] > mx) mx = vals[k];
-          }
-          return { min: mn, max: mx };
+          const vals = mwMaps.map(m => m.get(ts)).filter(v => v != null);
+          return vals.length ? {min: Math.min(...vals), max: Math.max(...vals)} : {min: null, max: null};
         });
 
-        let html = `<table><thead><tr>`;
-        html += `<th class="sticky-left">Forecast release (ET)</th>`;
-        for (let j = 0; j < colLabels.length; j++) {
-          html += `<th class="mono">${colLabels[j]}</th>`;
-        }
-        html += `</tr></thead><tbody>`;
+        let html = "<table><thead><tr>";
+        html += "<th class='sticky-left'>Forecast release (ET)</th>";
+        colEt.forEach(d => html += `<th class="mono">${fmtETShort(d)}</th>`);
+        html += "</tr></thead><tbody>";
 
-        // Newest release at top
+        // newest at top
         for (let i = runsSorted.length - 1; i >= 0; i--) {
           const runEt = toETDate(runsSorted[i].run_ts);
-          html += `<tr>`;
-          html += `<td class="sticky-left mono">${fmtET(runEt)}</td>`;
+          html += `<tr><td class="sticky-left mono">${fmtET(runEt)}</td>`;
 
-          for (let j = 0; j < colUtc.length; j++) {
-            const mw = mwMaps[i].get(colUtc[j]);
+          colUtc.forEach((ts,j) => {
+            const mw = mwMaps[i].get(ts);
             const mm = colMinMax[j];
-
             let t = null;
-            if (mw !== undefined && mw !== null && isFinite(mw) && mm.min !== null && mm.max !== null) {
-              if (mm.max !== mm.min) {
-                t = (mw - mm.min) / (mm.max - mm.min);
-              } else {
-                t = 0.5; // all same in this column
-              }
+            if (mw != null && mm.min != null && mm.max != null && mm.max !== mm.min) {
+              t = (mw - mm.min) / (mm.max - mm.min);
             }
-
             const bg = colorForColumnRelative(t);
+            html += `<td class="cell mono" style="background:${bg}">${mw != null ? fmtMW(mw) : ""}</td>`;
+          });
 
-            const title = (mw !== undefined && mw !== null && isFinite(mw))
-              ? `MW: ${fmtMW(mw)} | col min: ${fmtMW(mm.min)} max: ${fmtMW(mm.max)}`
-              : "No value";
-
-            html += `<td class="cell mono" style="background:${bg}" title="${title}">`;
-            html += (mw !== undefined && mw !== null && isFinite(mw)) ? fmtMW(mw) : "";
-            html += `</td>`;
-          }
-
-          html += `</tr>`;
+          html += "</tr>";
         }
 
-        html += `</tbody></table>`;
-        document.getElementById("table-container").innerHTML = html;
+        html += "</tbody></table>";
+        document.getElementById(tableElId).innerHTML = html;
       }
 
-      async function load() {
-        // Badge
-        const latestResp = await fetch(`/api/latest?area=${encodeURIComponent(AREA)}`);
-        const latest = await latestResp.json();
-        document.getElementById("status").textContent =
-          latest && latest.run_ts ? `Last ingest: ${latest.run_ts}` : "No data yet";
+      async function renderPanel(feed, chartElId, badgeElId, tableElId, sinceHours) {
+        // badge
+        const latest = await (await fetch(`/api/latest?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}`)).json();
+        document.getElementById(badgeElId).textContent =
+          latest?.run_ts ? `Last ingest: ${latest.run_ts}` : "No data";
 
-        // Fetch more than we need, then clip to latest MAX_RUNS
-        const runsResp = await fetch(`/api/runs?area=${encodeURIComponent(AREA)}&since_hours=48`);
-        const data = await runsResp.json();
-        const runsAll = (data && data.runs) ? data.runs : [];
-        if (!runsAll.length) return;
+        // runs
+        const data = await (await fetch(`/api/runs?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}&since_hours=${sinceHours}&limit=${MAX_RUNS}`)).json();
+        if (!data?.runs?.length) {
+          Plotly.purge(chartElId);
+          document.getElementById(tableElId).innerHTML = "<div style='padding:10px;color:#666;'>No data yet.</div>";
+          return;
+        }
 
-        const runsLimited = pickLatestRuns(runsAll, MAX_RUNS);
+        const runs = pickLatestRuns(data.runs);
 
-        // ===== Chart =====
-        const now = new Date();
-        const newestMs = Math.max(...runsLimited.map(r => new Date(r.run_ts).getTime()));
+        // chart
+        const newest = Math.max(...runs.map(r => new Date(r.run_ts).getTime()));
+        const traces = runs.map((r, i) => {
+          const isLatest = new Date(r.run_ts).getTime() === newest;
 
-        // Fade based on rank among the kept runs (not wall-clock time)
-        // newest rank = 0, oldest rank = 1
-        const traces = [];
-        const n = runsLimited.length;
+          // opacity ramp: old still visible
+          const frac = (runs.length <= 1) ? 1 : i / (runs.length - 1); // older -> smaller i
+          const opacity = isLatest ? 1 : (0.35 + 0.55 * Math.pow(frac, 0.8)); // 0.35..0.90
 
-        runsLimited.forEach((r, idx) => {
-          const runTs = new Date(r.run_ts);
-          const isLatest = runTs.getTime() === newestMs;
-
-          const tRank = (n <= 1) ? 0 : (idx / (n - 1)); // 0 oldest -> 1 newest (because runsLimited oldest->newest)
-          const ageT = 1 - tRank; // 0 newest -> 1 oldest
-
-          // Visible gradient you liked
-          const curve = Math.pow(1 - ageT, 2.2);
-          const opacity = 0.12 + 0.78 * curve;
-
-          traces.push({
+          return {
             x: r.points.map(p => toETDate(p.target_ts)),
             y: r.points.map(p => p.mw),
-            type: "scatter",
             mode: "lines",
             line: {
               color: isLatest ? COLOR_LATEST : COLOR_OLD,
-              width: isLatest ? 2.6 : 1.1
+              width: isLatest ? 2.6 : 1.2
             },
-            opacity: isLatest ? 1.0 : opacity,
-            hovertemplate: isLatest
-              ? "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra>Latest</extra>"
-              : "Hour (ET): %{x}<br>MW: %{y:,.0f}<extra></extra>"
-          });
+            opacity
+          };
         });
 
-        const layout = {
-          margin: { l: 60, r: 20, t: 20, b: 40 },
+        Plotly.newPlot(chartElId, traces, {
           xaxis: { title: "Hour (ET)" },
           yaxis: { title: "MW" },
           showlegend: false,
-          shapes: []
-        };
+          margin: { l: 60, r: 20, t: 10, b: 50 }
+        }, { displayModeBar: false });
 
-        Plotly.newPlot("chart", traces, layout, {
-          displayModeBar: false,
-          responsive: true
-        });
-
-        // Now (ET) line
-        const nowET = nowETDate();
-        Plotly.relayout("chart", {
-          shapes: [
-            {
-              type: "line",
-              xref: "x",
-              yref: "paper",
-              x0: nowET,
-              x1: nowET,
-              y0: 0,
-              y1: 1,
-              line: { color: "#000", width: 1, dash: "dot" }
-            }
-          ]
-        });
-
-        // ===== Table =====
-        buildMatrixTable(runsLimited);
+        // table
+        buildMatrixTable(runs, tableElId);
       }
 
-      load();
-      setInterval(load, 60_000);
+      async function loadAll() {
+        // overall status just shows web alive + last 7day ingest if present
+        const latest7 = await (await fetch(`/api/latest?feed=7day&area=${AREA}`)).json();
+        document.getElementById("status").textContent =
+          latest7?.run_ts ? `Last ingest (7day): ${latest7.run_ts}` : "No data";
+
+        // 7day: show last ~3 days of runs so you get 12 lines if you ingest often
+        await renderPanel("7day", "chart-7day", "badge-7day", "table-7day", 72);
+
+        // vshort: updates more often, but we still just want the latest 12 runs
+        await renderPanel("vshort", "chart-vshort", "badge-vshort", "table-vshort", 24);
+      }
+
+      loadAll();
+      setInterval(loadAll, 60000);
     </script>
   </body>
 </html>
