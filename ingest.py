@@ -90,7 +90,6 @@ def infer_columns(df: pd.DataFrame):
 
     col_area = find_one(["forecast_area", "area", "zone", "region"])
 
-    # Prefer the "beginning" timestamp when available
     col_target = find_one([
         "forecast_datetime_beginning_utc",
         "forecast_datetime_beginning_ept",
@@ -121,10 +120,7 @@ def infer_columns(df: pd.DataFrame):
 
 def normalize_points(df: pd.DataFrame, col_area: str, col_target: str, col_mw: str) -> pd.DataFrame:
     df = df[df[col_area] == AREA_FILTER].copy()
-
-    # Avoid slow per-element parsing warnings by letting pandas infer, but coerce bad values.
     df["target_ts"] = pd.to_datetime(df[col_target], utc=True, errors="coerce")
-
     df = df.dropna(subset=["target_ts"])
     df["mw_val"] = pd.to_numeric(df[col_mw], errors="coerce")
     df = df.dropna(subset=["mw_val"])
@@ -143,15 +139,12 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
     col_area, col_target, col_mw = infer_columns(df)
     df = normalize_points(df, col_area, col_target, col_mw)
 
-    # Always trim the back
     df = df[df["target_ts"] < window_end]
 
-    # For vshort, also trim the front hard (avoid ancient rows)
     if feed == "vshort":
         window_start = now - timedelta(hours=VSHORT_LOOKBACK_HOURS)
         df = df[df["target_ts"] >= window_start]
 
-    # De-dupe target timestamps within the same run (prevents same-run collisions)
     df = df.drop_duplicates(subset=["target_ts"], keep="last")
 
     if len(df) < min_points:
@@ -161,7 +154,6 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Dedupe run by payload hash
             cur.execute(
                 "SELECT 1 FROM forecast_runs WHERE feed=%s AND area=%s AND payload_hash=%s",
                 (feed, AREA_FILTER, payload_hash),
@@ -174,7 +166,6 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
                 (feed, AREA_FILTER, now, payload_hash),
             )
 
-            # Insert points safely (won't crash if a duplicate sneaks through)
             cur.executemany(
                 """
                 INSERT INTO forecast_points(feed, area, run_ts, target_ts, mw)
@@ -185,8 +176,8 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
             )
 
             cutoff = now - timedelta(days=RETENTION_DAYS)
-            cur.execute("DELETE FROM forecast_runs WHERE created_at < %s", (cutoff,))
             cur.execute("DELETE FROM forecast_points WHERE run_ts < %s", (cutoff,))
+            cur.execute("DELETE FROM forecast_runs WHERE run_ts < %s", (cutoff,))
 
         conn.commit()
 
@@ -203,7 +194,6 @@ def ingest_feed(feed: str, url: str, horizon_hours: int, min_points: int, sub_ke
 def ingest_once():
     init_db()
     sub_key = get_subscription_key_via_browser()
-
     results = []
     results.append(ingest_feed("7day", PJM_7DAY_URL, HORIZON_HOURS_7DAY, MIN_POINTS_7DAY, sub_key))
     results.append(ingest_feed("vshort", PJM_VSHORT_URL, HORIZON_HOURS_VSHORT, MIN_POINTS_VSHORT, sub_key))
