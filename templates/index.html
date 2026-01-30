@@ -64,7 +64,8 @@
     <div class="panel">
       <div class="row">
         <h3>Very Short Load Forecast (5-minute feed)</h3>
-        <div class="badge"/npm data is from an invalid parse, keep stable --> id="badge-vshort">Loading…</div>
+        <!-- ✅ FIXED LINE -->
+        <div class="badge" id="badge-vshort">Loading…</div>
       </div>
       <div class="sub">
         This feed is ~2 hours forward in 5-minute steps. Same visualization logic as hourly. Chart is clipped to midnight ET today.
@@ -83,17 +84,12 @@
       const TIMEZONE = "America/New_York";
 
       const MAX_RUNS = 12;
-
-      // Table trimming behavior: keep your existing intent (current hour - 1)
       const TABLE_LOOKBACK_HOURS = 1;
 
       const COLOR_LATEST = "#d62728";
       const COLOR_OLD = "#1f77b4";
 
       // ---- Robust ET helpers (avoid parsing locale strings) ----
-      // We intentionally create "ET wall-clock" Date objects by extracting ET parts,
-      // then constructing a Date in *local* time with those parts. This matches your intent:
-      // x-axis labels represent ET wall-clock.
       function etParts(date) {
         const fmt = new Intl.DateTimeFormat("en-US", {
           timeZone: TIMEZONE,
@@ -106,7 +102,7 @@
         for (const p of partsArr) {
           if (p.type !== "literal") parts[p.type] = p.value;
         }
-        return parts; // {year,month,day,hour,minute,second}
+        return parts;
       }
 
       function etNow() {
@@ -123,7 +119,6 @@
       }
 
       function etFromIso(isoUtc) {
-        // isoUtc is a UTC timestamp string from server; we convert to ET wall-clock parts.
         const d = new Date(isoUtc);
         if (Number.isNaN(d.getTime())) return null;
         const p = etParts(d);
@@ -178,24 +173,21 @@
         const dist = Math.abs(t - 0.5) * 2;
         const alpha = 0.10 + 0.65 * Math.pow(dist, 0.85);
         return t > 0.5
-          ? `rgba(220,53,69,${alpha})`   // red
-          : `rgba(40,167,69,${alpha})`;  // green
+          ? `rgba(220,53,69,${alpha})`
+          : `rgba(40,167,69,${alpha})`;
       }
 
       function buildMatrixTable(runs, tableElId) {
         const runsSorted = [...runs].sort((a,b) => new Date(a.run_ts) - new Date(b.run_ts));
 
         const colSet = new Set();
-        runsSorted.forEach(r => r.points.forEach(p => colSet.add(p.target_ts)));
+        runsSorted.forEach(r => (r.points || []).forEach(p => colSet.add(p.target_ts)));
 
         const colUtcAll = [...colSet].sort((a,b)=>new Date(a)-new Date(b));
-        const colEtAll  = colUtcAll.map(etFromIso).filter(Boolean);
 
         const nowET = etNow();
         const tableStartET = new Date(floorToHour(nowET).getTime() - TABLE_LOOKBACK_HOURS*3600000);
 
-        // Keep cols >= tableStartET. Need aligned indices between colUtcAll & colEtAll,
-        // so rebuild with a loop rather than relying on filtering above.
         const colUtc = [];
         const colEt  = [];
         for (let i = 0; i < colUtcAll.length; i++) {
@@ -209,7 +201,7 @@
 
         const mwMaps = runsSorted.map(r => {
           const m = new Map();
-          r.points.forEach(p => m.set(p.target_ts, p.mw));
+          (r.points || []).forEach(p => m.set(p.target_ts, p.mw));
           return m;
         });
 
@@ -295,26 +287,21 @@
         return new Date(maxMs);
       }
 
-      // Keep last good plots so a bad/empty fetch can't blank the chart.
-      const LAST_GOOD = {
-        "chart-7day": null,
-        "chart-vshort": null
-      };
-
-      // Data revision so Plotly reliably updates without tearing.
-      const DATA_REV = {
-        "chart-7day": 0,
-        "chart-vshort": 0
-      };
+      const LAST_GOOD = { "chart-7day": null, "chart-vshort": null };
+      const DATA_REV = { "chart-7day": 0, "chart-vshort": 0 };
 
       async function renderPanel(feed, chartElId, badgeElId, tableElId, sinceHours) {
-        // Latest ingest badge (display as ET)
+        const badgeEl = document.getElementById(badgeElId);
+        const chartEl = document.getElementById(chartElId);
+        const tableEl = document.getElementById(tableElId);
+
+        // Latest ingest badge
         const latest = await (await fetch(`/api/latest?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}`)).json();
         if (latest?.run_ts) {
           const t = etFromIso(latest.run_ts);
-          document.getElementById(badgeElId).textContent = t ? `Last ingest (ET): ${fmtET(t)}` : "Last ingest (ET): ?";
+          badgeEl.textContent = t ? `Last ingest (ET): ${fmtET(t)}` : "Last ingest (ET): ?";
         } else {
-          document.getElementById(badgeElId).textContent = "No data";
+          badgeEl.textContent = "No data";
         }
 
         const url =
@@ -324,9 +311,8 @@
         const data = await (await fetch(url)).json();
 
         if (!data?.runs?.length) {
-          // Do NOT purge here (that causes flicker). Keep last good plot.
           if (!LAST_GOOD[chartElId]) {
-            document.getElementById(tableElId).innerHTML = "<div style='padding:10px;color:#666;'>No data yet.</div>";
+            tableEl.innerHTML = "<div style='padding:10px;color:#666;'>No data yet.</div>";
           }
           return;
         }
@@ -338,7 +324,6 @@
         const nowEt = data?.meta?.now_et ? etFromIso(data.meta.now_et) : etNow();
         const nowEtSafe = nowEt || etNow();
 
-        // Build traces (and aggressively drop invalid points)
         const traces = runs.map((r, i) => {
           const isLatest = new Date(r.run_ts).getTime() === newestMs;
 
@@ -364,15 +349,16 @@
           };
         }).filter(t => t.x.length > 0);
 
-        // If everything got filtered out, keep last good render.
         if (!traces.length) {
+          // If everything got filtered (rare but possible), don't blank the chart silently.
           if (LAST_GOOD[chartElId]) {
             Plotly.react(chartElId, LAST_GOOD[chartElId].traces, LAST_GOOD[chartElId].layout, LAST_GOOD[chartElId].config);
+          } else {
+            chartEl.innerHTML = "<div style='padding:10px;color:#666;'>No usable points after midnight ET clip.</div>";
           }
           return;
         }
 
-        // IMPORTANT: always set x-axis max (no null), otherwise Plotly flashes weird defaults.
         const xMax = computeXMaxFromTraces(traces, nowEtSafe);
         const xMaxSafe = (xMax.getTime() < nowEtSafe.getTime())
           ? new Date(nowEtSafe.getTime() + 15 * 60000)
@@ -381,10 +367,7 @@
         DATA_REV[chartElId]++;
 
         const layout = {
-          xaxis: {
-            title: "Time (ET)",
-            range: [xMin, xMaxSafe]
-          },
+          xaxis: { title: "Time (ET)", range: [xMin, xMaxSafe] },
           yaxis: { title: "MW" },
           showlegend: false,
           margin: { l: 60, r: 20, t: 10, b: 50 },
@@ -396,17 +379,12 @@
 
         const config = { displayModeBar: false, responsive: true };
 
-        // Use react (no teardown) => eliminates flicker/blank flashes.
         Plotly.react(chartElId, traces, layout, config);
-
-        // Save last good state.
         LAST_GOOD[chartElId] = { traces, layout, config };
 
-        // Table (keep your original behavior)
         buildMatrixTable(runs, tableElId);
       }
 
-      // ---- Resize robustness: prevents "blank until I interact" ----
       function attachPlotResizer(chartElId) {
         const el = document.getElementById(chartElId);
         if (!el) return;
@@ -426,7 +404,6 @@
       attachPlotResizer("chart-7day");
       attachPlotResizer("chart-vshort");
 
-      // Prevent overlapping refresh cycles (interval + slow network)
       let LOAD_IN_FLIGHT = false;
 
       async function loadAll() {
@@ -446,7 +423,6 @@
           await renderPanel("7day", "chart-7day", "badge-7day", "table-7day", 72);
           await renderPanel("vshort", "chart-vshort", "badge-vshort", "table-vshort", 24);
         } catch (e) {
-          // Don't nuke charts on transient errors. Just show status.
           document.getElementById("status").textContent = "Error loading data";
           console.error(e);
         } finally {
