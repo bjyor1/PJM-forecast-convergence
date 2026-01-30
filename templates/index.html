@@ -64,7 +64,7 @@
     <div class="panel">
       <div class="row">
         <h3>Very Short Load Forecast (5-minute feed)</h3>
-        <div class="badge" id="badge-vshort">Loading…</div>
+        <div class="badge"/npm data is from an invalid parse, keep stable --> id="badge-vshort">Loading…</div>
       </div>
       <div class="sub">
         This feed is ~2 hours forward in 5-minute steps. Same visualization logic as hourly. Chart is clipped to midnight ET today.
@@ -90,15 +90,52 @@
       const COLOR_LATEST = "#d62728";
       const COLOR_OLD = "#1f77b4";
 
-      // ---- Time helpers (ET) ----
+      // ---- Robust ET helpers (avoid parsing locale strings) ----
+      // We intentionally create "ET wall-clock" Date objects by extracting ET parts,
+      // then constructing a Date in *local* time with those parts. This matches your intent:
+      // x-axis labels represent ET wall-clock.
+      function etParts(date) {
+        const fmt = new Intl.DateTimeFormat("en-US", {
+          timeZone: TIMEZONE,
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+          hour12: false
+        });
+        const partsArr = fmt.formatToParts(date);
+        const parts = {};
+        for (const p of partsArr) {
+          if (p.type !== "literal") parts[p.type] = p.value;
+        }
+        return parts; // {year,month,day,hour,minute,second}
+      }
 
       function etNow() {
-        // Date object whose wall-clock matches ET (constructed via locale string)
-        return new Date(new Date().toLocaleString("en-US", { timeZone: TIMEZONE }));
+        const p = etParts(new Date());
+        return new Date(
+          Number(p.year),
+          Number(p.month) - 1,
+          Number(p.day),
+          Number(p.hour),
+          Number(p.minute),
+          Number(p.second),
+          0
+        );
       }
 
       function etFromIso(isoUtc) {
-        return new Date(new Date(isoUtc).toLocaleString("en-US", { timeZone: TIMEZONE }));
+        // isoUtc is a UTC timestamp string from server; we convert to ET wall-clock parts.
+        const d = new Date(isoUtc);
+        if (Number.isNaN(d.getTime())) return null;
+        const p = etParts(d);
+        return new Date(
+          Number(p.year),
+          Number(p.month) - 1,
+          Number(p.day),
+          Number(p.hour),
+          Number(p.minute),
+          Number(p.second),
+          0
+        );
       }
 
       function etMidnightToday() {
@@ -115,7 +152,6 @@
       }
 
       function fmtET(dt) {
-        // dt is already an ET-wallclock Date
         const yyyy = dt.getFullYear();
         const mm = String(dt.getMonth() + 1).padStart(2, "0");
         const dd = String(dt.getDate()).padStart(2, "0");
@@ -125,7 +161,6 @@
       }
 
       function fmtETShort(dt) {
-        // MM-DD HH:MM
         const mm = String(dt.getMonth() + 1).padStart(2, "0");
         const dd = String(dt.getDate()).padStart(2, "0");
         const hh = String(dt.getHours()).padStart(2, "0");
@@ -138,7 +173,6 @@
       }
 
       // ---- Table shading ----
-
       function colorForColumnRelative(t) {
         if (t === null || !isFinite(t)) return "rgba(0,0,0,0.03)";
         const dist = Math.abs(t - 0.5) * 2;
@@ -155,18 +189,23 @@
         runsSorted.forEach(r => r.points.forEach(p => colSet.add(p.target_ts)));
 
         const colUtcAll = [...colSet].sort((a,b)=>new Date(a)-new Date(b));
-        const colEtAll  = colUtcAll.map(etFromIso);
+        const colEtAll  = colUtcAll.map(etFromIso).filter(Boolean);
 
         const nowET = etNow();
         const tableStartET = new Date(floorToHour(nowET).getTime() - TABLE_LOOKBACK_HOURS*3600000);
 
-        const keptIdx = colEtAll
-          .map((d,i)=>({d,i}))
-          .filter(o => o.d >= tableStartET)
-          .map(o => o.i);
-
-        const colUtc = keptIdx.map(i => colUtcAll[i]);
-        const colEt  = keptIdx.map(i => colEtAll[i]);
+        // Keep cols >= tableStartET. Need aligned indices between colUtcAll & colEtAll,
+        // so rebuild with a loop rather than relying on filtering above.
+        const colUtc = [];
+        const colEt  = [];
+        for (let i = 0; i < colUtcAll.length; i++) {
+          const et = etFromIso(colUtcAll[i]);
+          if (!et) continue;
+          if (et >= tableStartET) {
+            colUtc.push(colUtcAll[i]);
+            colEt.push(et);
+          }
+        }
 
         const mwMaps = runsSorted.map(r => {
           const m = new Map();
@@ -186,7 +225,7 @@
 
         for (let i = runsSorted.length - 1; i >= 0; i--) {
           const runEt = etFromIso(runsSorted[i].run_ts);
-          html += `<tr><td class="sticky-left mono">${fmtET(runEt)}</td>`;
+          html += `<tr><td class="sticky-left mono">${runEt ? fmtET(runEt) : ""}</td>`;
 
           colUtc.forEach((ts,j) => {
             const mw = mwMaps[i].get(ts);
@@ -207,7 +246,6 @@
       }
 
       // ---- Plotly helpers ----
-
       function buildNowLineShape(nowEtDate) {
         return {
           name: "nowLine",
@@ -241,22 +279,44 @@
       }
 
       function chooseNewestRunTs(runs) {
-        return runs.reduce((acc, r) => {
-          const t = new Date(r.run_ts).getTime();
-          return Math.max(acc, t);
-        }, 0);
+        return runs.reduce((acc, r) => Math.max(acc, new Date(r.run_ts).getTime()), 0);
       }
+
+      function computeXMaxFromTraces(traces, fallbackNow) {
+        let maxMs = -Infinity;
+        for (const t of traces) {
+          if (!t.x || !t.x.length) continue;
+          for (const x of t.x) {
+            const ms = (x instanceof Date) ? x.getTime() : new Date(x).getTime();
+            if (!Number.isNaN(ms)) maxMs = Math.max(maxMs, ms);
+          }
+        }
+        if (!Number.isFinite(maxMs)) return new Date(fallbackNow.getTime() + 2 * 3600000);
+        return new Date(maxMs);
+      }
+
+      // Keep last good plots so a bad/empty fetch can't blank the chart.
+      const LAST_GOOD = {
+        "chart-7day": null,
+        "chart-vshort": null
+      };
+
+      // Data revision so Plotly reliably updates without tearing.
+      const DATA_REV = {
+        "chart-7day": 0,
+        "chart-vshort": 0
+      };
 
       async function renderPanel(feed, chartElId, badgeElId, tableElId, sinceHours) {
         // Latest ingest badge (display as ET)
         const latest = await (await fetch(`/api/latest?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}`)).json();
         if (latest?.run_ts) {
-          document.getElementById(badgeElId).textContent = `Last ingest (ET): ${fmtET(etFromIso(latest.run_ts))}`;
+          const t = etFromIso(latest.run_ts);
+          document.getElementById(badgeElId).textContent = t ? `Last ingest (ET): ${fmtET(t)}` : "Last ingest (ET): ?";
         } else {
           document.getElementById(badgeElId).textContent = "No data";
         }
 
-        // Runs: server clips to midnight ET today + returns meta
         const url =
           `/api/runs?feed=${encodeURIComponent(feed)}&area=${encodeURIComponent(AREA)}` +
           `&since_hours=${sinceHours}&limit=${MAX_RUNS}&clip_to_midnight_et=true`;
@@ -264,28 +324,32 @@
         const data = await (await fetch(url)).json();
 
         if (!data?.runs?.length) {
-          Plotly.purge(chartElId);
-          document.getElementById(tableElId).innerHTML = "<div style='padding:10px;color:#666;'>No data yet.</div>";
+          // Do NOT purge here (that causes flicker). Keep last good plot.
+          if (!LAST_GOOD[chartElId]) {
+            document.getElementById(tableElId).innerHTML = "<div style='padding:10px;color:#666;'>No data yet.</div>";
+          }
           return;
         }
 
         const runs = sortRunsAsc(data.runs);
         const newestMs = chooseNewestRunTs(runs);
 
-        // X-axis min: midnight ET today (client enforced)
         const xMin = etMidnightToday();
-
-        // "Now" (ET): prefer server-provided, fallback to local ET
         const nowEt = data?.meta?.now_et ? etFromIso(data.meta.now_et) : etNow();
+        const nowEtSafe = nowEt || etNow();
 
-        // Build traces
+        // Build traces (and aggressively drop invalid points)
         const traces = runs.map((r, i) => {
           const isLatest = new Date(r.run_ts).getTime() === newestMs;
 
-          // Filter any stragglers before midnight ET (belt + suspenders)
-          const pts = r.points
-            .map(p => ({ x: etFromIso(p.target_ts), y: p.mw }))
-            .filter(p => p.x >= xMin);
+          const pts = (r.points || [])
+            .map(p => {
+              const x = etFromIso(p.target_ts);
+              const y = p.mw;
+              if (!x || y == null || !isFinite(Number(y))) return null;
+              return { x, y: Number(y) };
+            })
+            .filter(p => p && p.x >= xMin);
 
           const frac = (runs.length <= 1) ? 1 : i / (runs.length - 1);
           const opacity = isLatest ? 1 : (0.35 + 0.55 * Math.pow(frac, 0.8));
@@ -298,33 +362,96 @@
             opacity,
             hovertemplate: "%{x|%m-%d %H:%M} ET<br>%{y:.0f} MW<extra></extra>"
           };
-        });
+        }).filter(t => t.x.length > 0);
+
+        // If everything got filtered out, keep last good render.
+        if (!traces.length) {
+          if (LAST_GOOD[chartElId]) {
+            Plotly.react(chartElId, LAST_GOOD[chartElId].traces, LAST_GOOD[chartElId].layout, LAST_GOOD[chartElId].config);
+          }
+          return;
+        }
+
+        // IMPORTANT: always set x-axis max (no null), otherwise Plotly flashes weird defaults.
+        const xMax = computeXMaxFromTraces(traces, nowEtSafe);
+        const xMaxSafe = (xMax.getTime() < nowEtSafe.getTime())
+          ? new Date(nowEtSafe.getTime() + 15 * 60000)
+          : xMax;
+
+        DATA_REV[chartElId]++;
 
         const layout = {
           xaxis: {
             title: "Time (ET)",
-            range: [xMin, null] // clip to midnight ET today
+            range: [xMin, xMaxSafe]
           },
           yaxis: { title: "MW" },
           showlegend: false,
           margin: { l: 60, r: 20, t: 10, b: 50 },
-          shapes: [buildNowLineShape(nowEt)],
-          annotations: [buildNowLabelAnnotation(nowEt)]
+          shapes: [buildNowLineShape(nowEtSafe)],
+          annotations: [buildNowLabelAnnotation(nowEtSafe)],
+          uirevision: `${feed}-stable`,
+          datarevision: DATA_REV[chartElId]
         };
 
-        await Plotly.newPlot(chartElId, traces, layout, { displayModeBar: false, responsive: true });
+        const config = { displayModeBar: false, responsive: true };
+
+        // Use react (no teardown) => eliminates flicker/blank flashes.
+        Plotly.react(chartElId, traces, layout, config);
+
+        // Save last good state.
+        LAST_GOOD[chartElId] = { traces, layout, config };
 
         // Table (keep your original behavior)
         buildMatrixTable(runs, tableElId);
       }
 
-      async function loadAll() {
-        const latest7 = await (await fetch(`/api/latest?feed=7day&area=${encodeURIComponent(AREA)}`)).json();
-        document.getElementById("status").textContent =
-          latest7?.run_ts ? `Last ingest (7day, ET): ${fmtET(etFromIso(latest7.run_ts))}` : "No data";
+      // ---- Resize robustness: prevents "blank until I interact" ----
+      function attachPlotResizer(chartElId) {
+        const el = document.getElementById(chartElId);
+        if (!el) return;
 
-        await renderPanel("7day", "chart-7day", "badge-7day", "table-7day", 72);
-        await renderPanel("vshort", "chart-vshort", "badge-vshort", "table-vshort", 24);
+        const ro = new ResizeObserver(() => {
+          try { Plotly.Plots.resize(el); } catch (e) {}
+        });
+        ro.observe(el);
+
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) {
+            try { Plotly.Plots.resize(el); } catch (e) {}
+          }
+        });
+      }
+
+      attachPlotResizer("chart-7day");
+      attachPlotResizer("chart-vshort");
+
+      // Prevent overlapping refresh cycles (interval + slow network)
+      let LOAD_IN_FLIGHT = false;
+
+      async function loadAll() {
+        if (LOAD_IN_FLIGHT) return;
+        LOAD_IN_FLIGHT = true;
+
+        try {
+          const latest7 = await (await fetch(`/api/latest?feed=7day&area=${encodeURIComponent(AREA)}`)).json();
+          if (latest7?.run_ts) {
+            const t = etFromIso(latest7.run_ts);
+            document.getElementById("status").textContent =
+              t ? `Last ingest (7day, ET): ${fmtET(t)}` : "Last ingest (7day, ET): ?";
+          } else {
+            document.getElementById("status").textContent = "No data";
+          }
+
+          await renderPanel("7day", "chart-7day", "badge-7day", "table-7day", 72);
+          await renderPanel("vshort", "chart-vshort", "badge-vshort", "table-vshort", 24);
+        } catch (e) {
+          // Don't nuke charts on transient errors. Just show status.
+          document.getElementById("status").textContent = "Error loading data";
+          console.error(e);
+        } finally {
+          LOAD_IN_FLIGHT = false;
+        }
       }
 
       loadAll();
